@@ -308,10 +308,10 @@ Citation
 If you find this code useful, please consider citing:
 
 ```text
-@article{jin2024stereo4d,
-  title={Stereo4D: Learning How Things Move in 3D from Internet Stereo Videos}, 
+@inproceedings{jin2025stereo4d,
+  title={{Stereo4D: Learning How Things Move in 3D from Internet Stereo Videos}}, 
   author={Jin, Linyi and Tucker, Richard and Li, Zhengqi and Fouhey, David and Snavely, Noah and Holynski, Aleksander},
-  journal={CVPR},
+  booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition},
   year={2025},
 }
 ```
