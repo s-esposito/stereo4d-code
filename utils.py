@@ -11,6 +11,98 @@ import matplotlib
 import open3d as o3d
 import matplotlib.pyplot as plt
 
+def sample_depth_from_2d_points(points2d, depth_map):
+    """
+    Samples depth values from a depth map at specified 2D points.
+
+    Args:
+        points2d (np.ndarray): The 2D points in image coordinates, shape (N, 2).
+        depth_map (np.ndarray): The depth map of shape (H, W).
+    Returns:
+        np.ndarray: The sampled depth values at the specified 2D points, shape (N,).
+    """
+    imh, imw = depth_map.shape
+
+    # Extract pixel coordinates
+    u = points2d[:, 0]
+    v = points2d[:, 1]
+
+    # Clip coordinates to be within image bounds
+    u_clipped = np.clip(np.round(u).astype(int), 0, imw - 1)
+    v_clipped = np.clip(np.round(v).astype(int), 0, imh - 1)
+
+    # Sample depth values
+    sampled_depth = depth_map[v_clipped, u_clipped]
+
+    return sampled_depth
+
+def project_points_3d_to_2d(points3d, K, pose_c2w):
+    """
+    Projects 3D points into 2D image coordinates using the intrinsic matrix K
+    and the camera-to-world pose.
+
+    Args:
+        points3d (np.ndarray): The 3D points in world coordinates, shape (N, 3).
+        K (np.ndarray): The 3x3 intrinsic camera matrix.
+        pose_c2w (np.ndarray): The 4x4 camera-to-world transformation matrix.
+
+    Returns:
+        np.ndarray: The projected 2D points in image coordinates, shape (N, 2).
+    """
+    # Convert points3d to homogeneous coordinates
+    N = points3d.shape[0]
+    points3d_hom = np.concatenate((points3d, np.ones((N, 1))), axis=1)  # (N, 4)
+
+    # Transform points from world to camera coordinates
+    pose_w2c = np.linalg.inv(pose_c2w)
+    points_cam_hom = (pose_w2c @ points3d_hom.T).T  # (N, 4)
+
+    # Project points onto image plane
+    points_cam = points_cam_hom[:, :3]
+    points_2d_hom = (K @ points_cam.T).T  # (N, 3)
+
+    # Normalize to get pixel coordinates
+    points_2d = points_2d_hom[:, :2] / points_2d_hom[:, 2:3]  # (N, 2)
+
+    return points_2d
+
+def unproject_points_2d_to_3d(points2d, depth, K, pose_c2w):
+    
+    # Extract intrinsic parameters
+    fx = K[0, 0]
+    fy = K[1, 1]
+    cx = K[0, 2]
+    cy = K[1, 2]
+    
+    # Unproject points2d (N, 2) to camera space
+    u = points2d[:, 0]
+    v = points2d[:, 1]
+    
+    # Flatten arrays
+    u = u.reshape(-1)  # (H*W,)
+    v = v.reshape(-1)  # (H*W,)
+    z = depth.reshape(-1)  # (H*W,)
+    
+    # Apply pinhole camera model
+    # X = (u - cx) * Z / fx
+    # Y = (v - cy) * Z / fy
+    # Z = Z
+    x = (u - cx) * z / fx
+    y = (v - cy) * z / fy
+    
+    # Stack into (N, 3) array
+    points_3d_cam = np.stack([x, y, z], axis=1)
+    # to homogeneous coordinates
+    N = points_3d_cam.shape[0]
+    points_3d_cam_hom = np.concatenate([points_3d_cam, np.ones((N, 1))], axis=1)  # (N, 4)
+    
+    # Convert points from camera to world coordinates
+    N = points_3d_cam.shape[0]
+    points_3d_cam_hom = np.concatenate([points_3d_cam, np.ones((N, 1))], axis=1)  # (N, 4)
+    points_3d_world_hom = (pose_c2w @ points_3d_cam_hom.T).T  # (N, 4)
+    points_3d_world = points_3d_world_hom[:, :3] / points_3d_world_hom[:, 3:4]  # (N, 3)
+    
+    return points_3d_world
 
 def depth2xyz(depth, K):
     """

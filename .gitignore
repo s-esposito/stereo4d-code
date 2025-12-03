@@ -6,3 +6,5 @@ test/*
 train/*
 .vscode/*
 stereo4d-npz/*
+data/*
+tracks2d/*

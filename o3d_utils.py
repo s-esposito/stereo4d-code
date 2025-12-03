@@ -357,13 +357,13 @@ class VideoPointCloudApp:
         self.scene_widget.scene.add_geometry(self.PCD_NAME, initial_pcd, self.material)
         
         # Add coordinate frame at world origin
-        coord_frame = create_coordinate_frame(size=0.5, origin=[0, 0, 0])
+        coord_frame = create_coordinate_frame(size=0.2, origin=[0, 0, 0])
         coord_material = rendering.MaterialRecord()
         coord_material.shader = "defaultUnlit"
         self.scene_widget.scene.add_geometry("coordinate_frame", coord_frame, coord_material)
         
         # Add grid on XZ plane (ground plane, perpendicular to Y axis)
-        grid = create_grid(size=10.0, n=20, plane='xz', height=0.0)
+        grid = create_grid(size=20.0, n=20, plane='xz', height=0.0)
         grid_material = rendering.MaterialRecord()
         grid_material.shader = "unlitLine"
         grid_material.line_width = 1.0

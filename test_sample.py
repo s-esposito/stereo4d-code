@@ -10,6 +10,9 @@ import utils
 import o3d_utils
 from tqdm import tqdm
 
+MIN_DEPTH = 0.1
+MAX_DEPTH = 20.0
+
 
 def load_rgbd_cam_from_pkl(root_dir: str, split:str, scene:str, timestamp:str, hfov: float):
     """load rgb, depth, and camera"""
@@ -25,9 +28,9 @@ def load_rgbd_cam_from_pkl(root_dir: str, split:str, scene:str, timestamp:str, h
     
     # load test data from npz
     flow_path = f"{root_dir}/{split}/{scene}_{timestamp}/{scene}_{timestamp}-flows_stereo.pkl"
-    meta_path = f"{root_dir}/{split}/{scene}_{timestamp}/meta.npz"
-    video_path = f"{root_dir}/{split}/{scene}_{timestamp}/{scene}_{timestamp}-left_rectified.mp4"
-    disp_path = f"{root_dir}/{split}/{scene}_{timestamp}/disps.npz"
+    meta_path = f"{root_dir}/{split}/{scene}_{timestamp}/{scene}_{timestamp}.npz"
+    video_path = f"{root_dir}/{split}/{scene}_{timestamp}/{scene}_{timestamp}-right_rectified.mp4"
+    disp_path = f"{root_dir}/{split}/{scene}_{timestamp}/{scene}_{timestamp}-disps.npz"
         
     # Load video frames     
     rgbs, _ = load_video_frames(video_path)
@@ -67,24 +70,26 @@ def load_rgbd_cam_from_pkl(root_dir: str, split:str, scene:str, timestamp:str, h
         assert os.path.exists(disp_path), f"disparity file not found: {disp_path}"
     
         # load disparity data
-        disps = np.load(disp_path)["disps_left"]  # (N, H, W)
+        disps = np.load(disp_path)["disps"]  # (N, H, W)
         if disps.dtype == np.uint16:
             disps = utils.unquantize_from_uint16(disps, X_min=0.0, X_max=float(width))
             # remove highest value
             disps[disps >= width] = np.inf
         assert disps.dtype == np.float32, f"unexpected disparity dtype: {disps.dtype}"
         
-        disps[disps <= 0] = np.inf
+        disps[disps <= MIN_DEPTH] = np.inf
         disps[disps == disps.max()] = np.inf
     
     assert (disps == 0).sum() == 0, "disparities have zero values"
     
-    # Load camera
+    # Load meta
     dp = utils.load_dataset_npz(meta_path)
     # print("dp.keys():", dp.keys())
+    
+    # Load extrinsics
     extrs_rectified = dp['extrs_rectified']
     
-    track3d = dp["track3d"]  # (N, T, 3)
+    tracks3d = dp["track3d"]  # (N, T, 3)
 
     input_dict['nfr'] = nfr
     
@@ -144,8 +149,8 @@ def load_rgbd_cam_from_pkl(root_dir: str, split:str, scene:str, timestamp:str, h
         uncertainties.append(uncertainty)
         
     depths = np.stack(depths, axis=0)
-    depths[depths > 20] = 0
-    depths[depths < 0] = 0
+    depths[depths > MAX_DEPTH] = 0
+    depths[depths <= MIN_DEPTH] = 0
 
     # remove floating points
     mask = utils.gradient_check_mask_relative(depths, 0.03)
@@ -163,13 +168,88 @@ def load_rgbd_cam_from_pkl(root_dir: str, split:str, scene:str, timestamp:str, h
     K[0, :] *= width
     K[1, :] *= height
     
-    vis_tracks = False
+    update_tracks3d = False
+    if update_tracks3d:
+        
+        # project tracks3d to 2d
+        tracks2d = []
+        for t in range(tracks3d.shape[1]):
+            points3d = tracks3d[:, t, :]  # (N, 3)
+            pose_c2w = np.eye(4, dtype=np.float32)
+            pose_c2w[:3, :4] = extrs_rectified[t]
+            
+            points2d = utils.project_points_3d_to_2d(
+                points3d, K, pose_c2w
+            )  # (N, 2)
+            tracks2d.append(points2d)
+            # assert np.isnan(points2d).sum() == 0, "nan in projected 2d points"
+            
+        tracks2d = np.stack(tracks2d, axis=1)  # (N, T, 2)
+        
+        vis_tracks2d = False
+        if vis_tracks2d:
+        
+            # plot 2d points on images
+            tracks2d_subset = tracks2d[::10]  # subsample for visualization
+            
+            # first frame points
+            pts_colors = np.zeros_like(tracks2d_subset[:, 0, :] , dtype=np.float32)
+            empty_color = np.ones((tracks2d_subset.shape[0],), dtype=bool)
+            for t in range(tracks2d_subset.shape[1]):
+                pts2d = tracks2d_subset[:, t, :]  # (N, 2)
+                # filter nan or inf points
+                mask = np.isfinite(pts2d).all(axis=-1)
+                mask = mask & empty_color
+                color = pts2d[mask] / np.array([width, height])
+                color = np.clip(color, 0, 1)
+                pts_colors[mask] = color 
+                empty_color |= mask
+                print(f"Frame {t}: filled {mask.sum()} points")
+                if ~empty_color.any():
+                    break
+            pts_colors = np.concatenate([pts_colors, np.zeros((pts_colors.shape[0], 1), dtype=np.float32)], axis=-1)
+            
+            os.makedirs("tracks2d", exist_ok=True)
+            for fid in range(tracks2d_subset.shape[1]):
+                # fig = plt.figure(figsize=(5, 5))
+                # plt.subplot(1, len(frames), fid + 1)
+                plt.imshow(rgbs[fid])
+                pts2d = tracks2d_subset[:, fid, :]  # (N, 2)
+                # filter nan or inf points
+                mask = np.isfinite(pts2d).all(axis=-1)
+                pts2d = pts2d[mask]
+                color = pts_colors[mask]
+                plt.scatter(pts2d[:, 0], pts2d[:, 1], s=2, c=color)
+                plt.savefig(f"tracks2d/{fid:03d}.png")
+                plt.close()
+        
+        # unproject 2d tracks to 3d using new depth maps
+        tracks3d = []
+        for t in range(tracks2d.shape[1]):
+            points2d = tracks2d[:, t, :]  # (N, 2)
+            depth = depths[t]  # (H, W)
+            points_depth = utils.sample_depth_from_2d_points(
+                points2d, depth
+            )  # (N,)
+            points_depth[points_depth <= MIN_DEPTH] = np.nan  # mark invalid depth
+            # unproject to 3d
+            pose_c2w = np.eye(4, dtype=np.float32)
+            pose_c2w[:3, :4] = extrs_rectified[t]
+            points3d = utils.unproject_points_2d_to_3d(
+                points2d, points_depth, K, pose_c2w
+            )  # (N, 3)
+            tracks3d.append(points3d)
+            # assert np.isnan(tracks3d).sum() == 0, "nan in unprojected 3d points"
+            
+        tracks3d = np.stack(tracks3d, axis=1)  # (N, T, 3)
+        
+    vis_tracks = True
     o3d_utils.run_open3d_viewer(
         rgbs,
         depths,
         K,
         poses_c2w=extrs_rectified,
-        tracks3d=track3d if vis_tracks else None,
+        tracks3d=tracks3d if vis_tracks else None,
     )
     
     return input_dict
