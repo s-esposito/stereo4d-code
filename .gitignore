@@ -1,3 +1,7 @@
 __pycache__/
 stereo4d_dataset/
 .ipynb_checkpoints/
+demo/*
+test/*
+train/*
+.vscode/*

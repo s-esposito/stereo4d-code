@@ -8,8 +8,44 @@ from typing import List, Optional
 import cv2
 from matplotlib.collections import LineCollection
 import matplotlib
-
+import open3d as o3d
 import matplotlib.pyplot as plt
+
+def load_video_frames(video_path):
+    """
+    Loads an MP4 video as a sequence of frames using OpenCV.
+    
+    Returns: A list of NumPy arrays (frames) and the total frame count.
+    """
+    # 1. Open the video file
+    cap = cv2.VideoCapture(video_path)
+    
+    if not cap.isOpened():
+        print(f"Error: Could not open video file {video_path}")
+        return [], 0
+
+    # 2. Get the total number of frames reliably
+    # The constant for frame count is CAP_PROP_FRAME_COUNT (often 7)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    
+    frames = []
+    
+    # 3. Iterate and read frames
+    while cap.isOpened():
+        # ret (return value) is a boolean, frame is the frame itself (a NumPy array)
+        ret, frame = cap.read()
+        
+        if ret:
+            # Optionally convert BGR (OpenCV default) to RGB 
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            frames.append(frame)
+        else:
+            # Break the loop if we've reached the end of the video
+            break
+
+    # 4. Release the video capture object
+    cap.release()
+    return frames, frame_count
 
 class CameraAZ:
   def __init__(
@@ -75,6 +111,69 @@ class CameraAZ:
     Get the horizontal field of view (HFOV) in degrees.
     """
     return math.degrees(2 * np.arctan(0.5 / self.intr_normalized['fx']))
+
+
+def depth2xyz(depth, K):
+    """
+    Unprojects a 2D depth map (Z-depth) into a 3D point cloud (XYZ map)
+    in camera coordinates using the intrinsic camera matrix K.
+
+    Args:
+        depth (np.ndarray): The depth map of shape (H, W).
+        K (np.ndarray): The 3x3 intrinsic camera matrix.
+
+    Returns:
+        np.ndarray: The 3D points in camera coordinates, shape (H*W, 3).
+    """
+
+    # Prepare K_inv and flattened depth
+    K_inv = np.linalg.inv(K)  # (3, 3) - NumPy equivalent of torch.inverse
+    points_depth = depth.flatten()  # (H*W,) - NumPy equivalent of torch.flatten
+    height, width = depth.shape  # H, W -> dim 0, dim 1
+
+    # NumPy equivalent of torch.meshgrid(indexing="ij")
+    pixels_y, pixels_x = np.meshgrid(
+        np.arange(width),  # j/column index (u)
+        np.arange(height), # i/row index (v)
+        indexing="xy"      # Produces (j, i) where j is dim 0, i is dim 1 for (W, H)
+    )
+    # Stack in (x, y) order: (v, u) or (row index, col index)
+    pixels = np.stack([pixels_x, pixels_y], axis=-1).astype(np.int32)  # (H, W, 2)
+
+    # Get pixel centers and reshape
+    points_2d_screen = pixels.astype(np.float32)  # (H, W, 2)
+    points_2d_screen = points_2d_screen + 0.5  # pixels centers
+    points_2d_screen = points_2d_screen.reshape(-1, 2)  # (H*W, 2)
+
+    # Augment and Unproject to camera space
+    N = points_2d_screen.shape[0]  # H*W
+    ones = np.ones(
+        (N, 1),
+        dtype=points_2d_screen.dtype,
+    )  # (N, 1)
+
+    # Augmented points (u, v, 1) or (row_center, col_center, 1)
+    augmented_points_2d_screen = np.concatenate((points_2d_screen, ones), axis=1) # (N, 3)
+
+    # np.dot for (N, 3) @ (3, 3)
+    points_3d_camera = np.dot(augmented_points_2d_screen, K_inv.T) # (N, 3) @ (3, 3) -> (N, 3)
+
+    # Multiply by depth (z-depth)
+    # points_depth has shape (N,) -> needs to broadcast to (N, 3)
+    points_3d_camera *= points_depth[:, np.newaxis] # (N, 3) * (N, 1)
+
+    return points_3d_camera
+  
+def toOpen3dCloud(points,colors=None,normals=None):
+  cloud = o3d.geometry.PointCloud()
+  cloud.points = o3d.utility.Vector3dVector(points.astype(np.float64))
+  if colors is not None:
+    if colors.max()>1:
+      colors = colors/255.0
+    cloud.colors = o3d.utility.Vector3dVector(colors.astype(np.float64))
+  if normals is not None:
+    cloud.normals = o3d.utility.Vector3dVector(normals.astype(np.float64))
+  return cloud
 
 
   def get_intri_matrix(self, imh: int, imw: int):
@@ -391,12 +490,63 @@ def flow_to_depth(flow: np.ndarray, hfov_deg, baseline) -> np.ndarray:
       The calculated depth map (numpy array).
   """
   # disp = np.abs(flow[..., 0])
+  # Extract the horizontal component (disparity)
   disp = np.clip(flow[..., 0], 0, None)
   imh, imw = disp.shape
   fx = imw / np.tan(np.radians(hfov_deg / 2)) / 2
   depth = (fx * baseline) / disp
   return depth
 
+def gradient_check_mask_relative(depth_map, threshold):
+  if depth_map.ndim == 2:
+    # Case for single depth map with shape (h, w)
+    padded_depth_map = np.pad(depth_map, pad_width=1, mode='edge')
+
+    # Compute x and y gradients
+    grad_x = np.abs(padded_depth_map[1:-1, 2:] - padded_depth_map[1:-1, :-2])
+    grad_y = np.abs(padded_depth_map[2:, 1:-1] - padded_depth_map[:-2, 1:-1])
+
+    # Check if any gradient exceeds the threshold and the pixel is non-zero
+    mask = ((grad_x > threshold * depth_map) | (grad_y > threshold * depth_map)) & (depth_map != 0)
+
+  elif depth_map.ndim == 3:
+    # Case for batch of depth maps with shape (b, h, w)
+    padded_depth_map = np.pad(depth_map, pad_width=((0, 0), (1, 1), (1, 1)), mode='edge')
+
+    # Compute x and y gradients
+    grad_x = np.abs(padded_depth_map[:, 1:-1, 2:] - padded_depth_map[:, 1:-1, :-2])
+    grad_y = np.abs(padded_depth_map[:, 2:, 1:-1] - padded_depth_map[:, :-2, 1:-1])
+
+    # Check if any gradient exceeds the threshold and the pixel is non-zero
+    mask = ((grad_x > threshold * depth_map) | (grad_y > threshold * depth_map)) & (depth_map != 0)
+
+  else:
+    raise ValueError("depth_map must have shape (h, w) or (b, h, w)")
+
+  return mask
+
+def disparity_to_depth(disp: np.ndarray, hfov_deg, baseline) -> np.ndarray:
+  """Calculates depth map from the disparity map and camera metadata.
+
+  assumes cx2 - cx1 = 0, valid disparity should be positive
+
+  Args:
+      disp: The disparity map (numpy array).
+      hfov_deg: Horizontal field of view (degree).
+      baseline: The baseline value in meters (float).
+
+  Returns:
+      The calculated depth map (numpy array).
+  """
+  disp = np.clip(disp, 0, None)
+  imh, imw = disp.shape
+  fx = imw / np.tan(np.radians(hfov_deg / 2)) / 2
+  depth = (fx * baseline) / disp
+  
+  uncertainty = np.zeros_like(depth)
+  uncertainty[disp > 0] = (depth[disp > 0] ** 2) / (fx * baseline)
+  
+  return depth, uncertainty
 
 
 def inverse_warp(img: np.ndarray, flow: np.ndarray) -> np.ndarray:
