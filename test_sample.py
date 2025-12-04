@@ -31,15 +31,39 @@ def load_rgbd_cam_from_pkl(root_dir: str, split:str, scene:str, timestamp:str, h
     meta_path = f"{root_dir}/{split}/{scene}_{timestamp}/{scene}_{timestamp}.npz"
     video_path = f"{root_dir}/{split}/{scene}_{timestamp}/{scene}_{timestamp}-right_rectified.mp4"
     disp_path = f"{root_dir}/{split}/{scene}_{timestamp}/{scene}_{timestamp}-disps.npz"
+    sam_path = f"{root_dir}/{split}/{scene}_{timestamp}/{scene}_{timestamp}-sam3.npz"
         
     # Load video frames     
     rgbs, _ = load_video_frames(video_path)
     input_dict['left']['video'] = rgbs
     nfr = len(rgbs)
-
+    
     #
     height, width = rgbs[0].shape[:2]
     print("video frames", len(rgbs), height, width)
+    
+    # Load sam data
+    sam_data = None
+    if os.path.exists(sam_path):
+        sam_data = np.load(sam_path, allow_pickle=True)
+        print("Loaded sam data from:", sam_path)
+        
+    # Plot sam masks for first frame
+    instances_masks = None
+    if sam_data is not None:
+        instances_masks = []
+        for fid in range(len(rgbs)):
+            objs_dict = sam_data[str(fid)].item()
+            instance_mask = np.zeros((height, width), dtype=np.int32)
+            for oid in objs_dict:
+                mask = objs_dict[oid]  # (N, H, W)
+                instance_mask[mask] = int(oid) + 1  # start from 1
+            instances_masks.append(instance_mask)
+            # plt.imshow(instance_mask, cmap='tab20')
+            # plt.colorbar()
+            # plt.savefig(f"sam_instance_mask_{fid:03d}.png")
+            # plt.close()
+        instances_masks = np.stack(instances_masks, axis=0)  # (N, H, W)
     
     flow_as_disp = False
     if flow_as_disp:
@@ -250,6 +274,7 @@ def load_rgbd_cam_from_pkl(root_dir: str, split:str, scene:str, timestamp:str, h
         K,
         poses_c2w=extrs_rectified,
         tracks3d=tracks3d if vis_tracks else None,
+        instances_masks=instances_masks
     )
     
     return input_dict

@@ -292,18 +292,26 @@ def generate_point_cloud(rgb, depth, K, pose_c2w):
 
 
 class VideoPointCloudApp:
-    def __init__(self, rgbs, depths, K, poses_c2w, tracks3d=None, max_tracks=3000):
-        # 1. Initialize State
+    def __init__(self, rgbs, depths, K, poses_c2w, tracks3d=None, instances_masks=None, max_tracks=3000):
+        # Initialize State
         self.state = {'fid': 0}
         self.rgbs = rgbs  # (T, H, W, 3)
         self.depths = depths  # (T, H, W)
         self.K = K
         self.poses_c2w = poses_c2w  # (T, 4, 4)
         self.tracks3d = tracks3d  # (N, T, 3) or None
+        self.instances_masks = instances_masks  # (T, H, W) or None
         self.is_running = True
         self.last_update_time = time.time()
         self.update_interval = 0.03 # 30ms
+        self.keyframes_interval = 10
         
+        # Rendering flags
+        self.render_tracks = True
+        self.render_segmentation = False
+        self.render_keyframes = False
+        
+        # Precompute tracks colors
         if self.tracks3d is not None:
           # Convert first coordinate of each track to color
           self.tracks_colors = np.zeros_like(self.tracks3d[:, 0, :])
@@ -332,13 +340,28 @@ class VideoPointCloudApp:
               indices = np.linspace(0, n_tracks - 1, max_tracks).astype(int)
               self.tracks3d = self.tracks3d[indices]
               self.tracks_colors = self.tracks_colors[indices]
+              
+        # Precompute instance colors if instance masks are provided
+        if self.instances_masks is not None:
+            self.instance_colors = []
+            # Append black for background (instance 0)
+            self.instance_colors.append(np.array([0, 0, 0]))
+            # Instances start from 1
+            num_instances = np.max(self.instances_masks)
+            cmap = matplotlib.cm.get_cmap('tab20', num_instances)
+            for i in range(num_instances):
+                color = cmap(i)[:3]  # Get RGB color
+                self.instance_colors.append(np.array(color))
+            self.instance_colors = np.array(self.instance_colors) * 255.0
+            self.instance_colors = self.instance_colors.astype(np.uint8)
+            print("Instance colors:", self.instance_colors)
 
-        # 2. Setup Window
+        # Setup Window
         self.window = gui.Application.instance.create_window(
             "Open3D Video Point Cloud Viewer", 1920, 1080)
         self.window.set_on_close(self._on_close)
         
-        # 3. Setup Scene Widget (3D Viewport)
+        # Setup Scene Widget (3D Viewport)
         self.scene_widget = gui.SceneWidget()
         self.scene_widget.scene = rendering.Open3DScene(self.window.renderer)
         self.window.add_child(self.scene_widget)
@@ -347,14 +370,15 @@ class VideoPointCloudApp:
         # and disabling post-processing
         self.scene_widget.scene.set_background([1, 1, 1, 1])  # White background
         
-        # 4. Setup Material and Initial Geometry
+        # Setup Material and Initial Geometry
         self.material = rendering.MaterialRecord()
         self.material.shader = "defaultUnlit"  # Unlit shader bypasses lighting calculations
         self.material.point_size = 3.0 
         
         self.PCD_NAME = "current_point_cloud"
-        initial_pcd = generate_point_cloud(self.rgbs[0], self.depths[0], self.K, self.poses_c2w[0])
-        self.scene_widget.scene.add_geometry(self.PCD_NAME, initial_pcd, self.material)
+        self.CAMERA_TRAJECTORY_NAME = "camera_trajectory"
+        self.CAMERA_FRUSTUM_NAME = "current_camera_frustum"
+        self.TRACK_LINES_NAME = "track_lines"
         
         # Add coordinate frame at world origin
         coord_frame = create_coordinate_frame(size=0.2, origin=[0, 0, 0])
@@ -369,16 +393,69 @@ class VideoPointCloudApp:
         grid_material.line_width = 1.0
         self.scene_widget.scene.add_geometry("grid", grid, grid_material)
         
+        # Init first frame
+        initial_pcd = self._init_frame(fid=0)
+        
+        # Set Camera View
+        bounds = initial_pcd.get_axis_aligned_bounding_box()
+        self.scene_widget.setup_camera(60, bounds, bounds.get_center())
+
+        # Setup UI Panel (Slider)
+        self._setup_ui()
+        
+        # Register the tick callback
+        # FIX: Use set_on_tick_event on the window instead of add_timer on the app
+        self.window.set_on_tick_event(self._on_tick)
+        
+        print("Open3D GUI launched. Use the 'Frame Index' slider to navigate.")
+    
+    def _init_keyframes(self):
+      
+      # Add keyframes point clouds
+      keyframes_fids = list(range(0, len(self.rgbs), self.keyframes_interval))
+      for kf_fid in keyframes_fids:
+        
+        # Add initial point cloud
+        if self.render_segmentation:
+            assert self.instances_masks is not None, "Instance masks must be provided for segmentation rendering."
+            rgb = self.instance_colors[self.instances_masks[kf_fid].reshape(-1)].reshape(self.instances_masks[kf_fid].shape[0], self.instances_masks[kf_fid].shape[1], -1)
+        else:
+            rgb = self.rgbs[kf_fid]
+          
+        pcd = generate_point_cloud(
+            rgb=rgb,
+            depth=self.depths[kf_fid],
+            K=self.K,
+            pose_c2w=self.poses_c2w[kf_fid]
+        )
+        self.scene_widget.scene.add_geometry(f"{self.PCD_NAME}_{kf_fid}", pcd, self.material)
+    
+    def _init_frame(self, fid=0):
+      
+        # Add initial point cloud
+        if self.render_segmentation:
+            assert self.instances_masks is not None, "Instance masks must be provided for segmentation rendering."
+            rgb = self.instance_colors[self.instances_masks[fid].reshape(-1)].reshape(self.instances_masks[fid].shape[0], self.instances_masks[fid].shape[1], -1)
+        else:
+            rgb = self.rgbs[fid]
+          
+        pcd = generate_point_cloud(
+            rgb=rgb,
+            depth=self.depths[fid],
+            K=self.K,
+            pose_c2w=self.poses_c2w[fid]
+        )
+        self.scene_widget.scene.add_geometry(self.PCD_NAME, pcd, self.material)
+        
         # Add camera trajectory (line connecting all camera positions)
         if self.poses_c2w is not None and len(self.poses_c2w) > 1:
             trajectory = create_camera_trajectory(self.poses_c2w, color=[0, 0.5, 1])
             traj_material = rendering.MaterialRecord()
             traj_material.shader = "unlitLine"
             traj_material.line_width = 2.0
-            self.scene_widget.scene.add_geometry("camera_trajectory", trajectory, traj_material)
+            self.scene_widget.scene.add_geometry(self.CAMERA_TRAJECTORY_NAME, trajectory, traj_material)
         
         # Add current camera frustum
-        self.CAMERA_FRUSTUM_NAME = "current_camera_frustum"
         if self.poses_c2w is not None:
             frustum = create_camera_frustum(self.poses_c2w[0], self.K)
             frustum_material = rendering.MaterialRecord()
@@ -386,29 +463,7 @@ class VideoPointCloudApp:
             frustum_material.line_width = 2.0
             self.scene_widget.scene.add_geometry(self.CAMERA_FRUSTUM_NAME, frustum, frustum_material)
         
-        # Add 3D tracks visualization
-        self.TRACK_LINES_NAME = "track_lines"
-        self.TRACK_POINTS_NAME = "track_points"
-        # if self.tracks3d is not None:
-            # # Add track lines (trails)
-            # track_lines = create_track_lines(self.tracks3d, self.tracks_colors, 0, trail_length=10)
-            # track_lines_material = rendering.MaterialRecord()
-            # track_lines_material.shader = "unlitLine"
-            # track_lines_material.line_width = 2.0
-            # self.scene_widget.scene.add_geometry(self.TRACK_LINES_NAME, track_lines, track_lines_material)
-        
-        # 5. Set Camera View
-        bounds = initial_pcd.get_axis_aligned_bounding_box()
-        self.scene_widget.setup_camera(60, bounds, bounds.get_center())
-
-        # 6. Setup UI Panel (Slider)
-        self._setup_ui()
-        
-        # 7. Register the tick callback
-        # FIX: Use set_on_tick_event on the window instead of add_timer on the app
-        self.window.set_on_tick_event(self._on_tick)
-        
-        print("Open3D GUI launched. Use the 'Frame Index' slider to navigate.")
+        return pcd
     
     def _setup_ui(self):
         em = self.window.theme.font_size
@@ -416,25 +471,38 @@ class VideoPointCloudApp:
         # Store the layout as a member variable so we can resize it in _on_layout
         self.layout = gui.Vert(em, gui.Margins(em, em, em, em)) 
         
-        self.layout.add_child(gui.Label("Frame Index"))
-        
+        # Slider for frame index
         self.slider = gui.Slider(gui.Slider.INT)
         self.slider.set_limits(0, len(self.rgbs) - 1)
         self.slider.double_value = 0.0 
-        # Add callback for immediate slider updates (optional but smoother)
         self.slider.set_on_value_changed(self._on_slider_changed)
-        
-        self.label_fid = gui.Label(f"Frame: {self.state['fid']}")
-        
         self.layout.add_child(self.slider)
-        self.layout.add_child(self.label_fid)
+        
+        # Toggle buttons to show tracks
+        self.show_tracks_checkbox = gui.Checkbox("Show 3D Tracks")
+        self.show_tracks_checkbox.checked = self.render_tracks
+        self.show_tracks_checkbox.set_on_checked(self._on_show_tracks_toggled)
+        self.layout.add_child(self.show_tracks_checkbox)
+        
+        # Toggle button to show segmentation
+        self.show_segmentation_checkbox = gui.Checkbox("Show Segmentation")
+        self.show_segmentation_checkbox.checked = self.render_segmentation
+        self.show_segmentation_checkbox.set_on_checked(self._on_show_segmentation_toggled)
+        self.layout.add_child(self.show_segmentation_checkbox)
+        
+        # Toggle button to show keyframes
+        self.show_keyframes_checkbox = gui.Checkbox("Show Keyframes")
+        self.show_keyframes_checkbox.checked = self.render_keyframes
+        self.show_keyframes_checkbox.set_on_checked(self._on_show_keyframes_toggled)
+        self.layout.add_child(self.show_keyframes_checkbox)
+        
         self.panel.add_child(self.layout)
         self.window.add_child(self.panel)
         self.window.set_on_layout(self._on_layout)
 
     def _on_layout(self, layout_context):
         r = self.window.content_rect
-        panel_height = 120
+        panel_height = 160
         # Panel is positioned at the top
         self.panel.frame = gui.Rect(r.x, r.y, r.width, panel_height)
         # Scene widget takes the bottom portion
@@ -442,13 +510,29 @@ class VideoPointCloudApp:
 
     def _update_geometry(self, fid):
         """Helper to update the geometry based on frame index."""
+        
+        if self.render_keyframes:
+            # If rendering keyframes, just return
+            return
+        
         if fid < 0 or fid >= len(self.rgbs):
             return
 
         self.state['fid'] = fid
         
+        if self.render_segmentation:
+            assert self.instances_masks is not None, "Instance masks must be provided for segmentation rendering."
+            rgb = self.instance_colors[self.instances_masks[fid].reshape(-1)].reshape(self.instances_masks[0].shape[0], self.instances_masks[0].shape[1], -1)
+        else:
+            rgb = self.rgbs[fid]
+        
         # Generate new point cloud
-        new_pcd = generate_point_cloud(self.rgbs[fid], self.depths[fid], self.K, self.poses_c2w[fid])
+        new_pcd = generate_point_cloud(
+          rgb=rgb,
+          depth=self.depths[fid],
+          K=self.K,
+          pose_c2w=self.poses_c2w[fid]
+        )
         
         # Update Scene
         self.scene_widget.scene.remove_geometry(self.PCD_NAME)
@@ -464,7 +548,7 @@ class VideoPointCloudApp:
             self.scene_widget.scene.add_geometry(self.CAMERA_FRUSTUM_NAME, frustum, frustum_material)
         
         # Update track visualizations
-        if self.tracks3d is not None:
+        if self.tracks3d is not None and self.render_tracks:
             # Update track lines (trails)
             self.scene_widget.scene.remove_geometry(self.TRACK_LINES_NAME)
             track_lines = create_track_lines(self.tracks3d, self.tracks_colors, fid, trail_length=30)
@@ -473,15 +557,48 @@ class VideoPointCloudApp:
                 track_lines_material.shader = "unlitLine"
                 track_lines_material.line_width = 4.0
                 self.scene_widget.scene.add_geometry(self.TRACK_LINES_NAME, track_lines, track_lines_material)
-        
-        # Update UI text
-        self.label_fid.text = f"Frame: {fid}"
 
     def _on_slider_changed(self, new_val):
         """Handle manual slider movement immediately."""
         val = int(new_val)
         if val != self.state['fid']:
             self._update_geometry(val)
+            
+    def _on_show_tracks_toggled(self, is_checked):
+        """Handle toggling of 3D tracks visibility."""
+        self.render_tracks = is_checked
+        # Remove previously added tracks if any
+        self.scene_widget.scene.remove_geometry(self.TRACK_LINES_NAME)
+        # Update geometry to reflect change
+        self._update_geometry(self.state['fid'])
+        
+    def _on_show_segmentation_toggled(self, is_checked):
+        """Handle toggling of segmentation rendering."""
+        self.render_segmentation = is_checked
+        # Update geometry to reflect change
+        self._update_geometry(self.state['fid'])
+        
+    def _on_show_keyframes_toggled(self, is_checked):
+        """Handle toggling of keyframes visibility."""
+        self.render_keyframes = is_checked
+        
+        # Update geometry to reflect change
+        if self.render_keyframes:
+            # Clean scene
+            self.scene_widget.scene.remove_geometry(self.TRACK_LINES_NAME)
+            self.scene_widget.scene.remove_geometry(self.PCD_NAME)
+            self.scene_widget.scene.remove_geometry(self.CAMERA_FRUSTUM_NAME)
+            self.scene_widget.scene.remove_geometry(self.CAMERA_TRAJECTORY_NAME)
+            # Init keyframes
+            self._init_keyframes()  # init keyframe rendering
+        else:
+            # Clean scene from keyframes
+            keyframes_fids = list(range(0, len(self.rgbs), self.keyframes_interval))
+            for kf_fid in keyframes_fids:
+                self.scene_widget.scene.remove_geometry(f"{self.PCD_NAME}_{kf_fid}")
+            # Re-init single frame rendering
+            self._init_frame(fid=self.state['fid'])  # re-init single frame rendering
+            self._update_geometry(self.state['fid'])
 
     def _on_tick(self):
         """
@@ -517,7 +634,8 @@ def run_open3d_viewer(
   K: np.ndarray,
   poses_c2w: np.ndarray,
   tracks3d: np.ndarray | None = None,
+  instances_masks: np.ndarray | None = None,
 ):
     gui.Application.instance.initialize()
-    app = VideoPointCloudApp(rgbs, depths, K, poses_c2w, tracks3d)
+    app = VideoPointCloudApp(rgbs, depths, K, poses_c2w, tracks3d, instances_masks)
     gui.Application.instance.run()
