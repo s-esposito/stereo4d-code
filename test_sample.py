@@ -23,20 +23,32 @@ def load_rgbd_cam_from_pkl(root_dir: str, split:str, scene:str, timestamp:str, h
             'camera': [],
             'depth': [],
             'video': []
-        }
+        },
+        'right': {
+            'camera': [],
+            'depth': [],
+            'video': []
+        },
     }
     
     # load test data from npz
     flow_path = f"{root_dir}/{split}/{scene}_{timestamp}/{scene}_{timestamp}-flows_stereo.pkl"
     meta_path = f"{root_dir}/{split}/{scene}_{timestamp}/{scene}_{timestamp}.npz"
-    video_path = f"{root_dir}/{split}/{scene}_{timestamp}/{scene}_{timestamp}-right_rectified.mp4"
+    left_video_path = f"{root_dir}/{split}/{scene}_{timestamp}/{scene}_{timestamp}-left_rectified.mp4"
+    right_video_path = f"{root_dir}/{split}/{scene}_{timestamp}/{scene}_{timestamp}-right_rectified.mp4"
     disp_path = f"{root_dir}/{split}/{scene}_{timestamp}/{scene}_{timestamp}-disps.npz"
     sam_path = f"{root_dir}/{split}/{scene}_{timestamp}/{scene}_{timestamp}-sam3.npz"
         
     # Load video frames     
-    rgbs, _ = load_video_frames(video_path)
-    input_dict['left']['video'] = rgbs
+    # rgbs_left, _ = load_video_frames(left_video_path)
+    # input_dict['left']['video'] = rgbs_left
+    
+    rgbs_right, _ = load_video_frames(right_video_path)
+    input_dict['right']['video'] = rgbs_right
+    
+    rgbs = rgbs_right  # use right camera for visualization
     nfr = len(rgbs)
+    input_dict['nfr'] = nfr
     
     #
     height, width = rgbs[0].shape[:2]
@@ -110,12 +122,14 @@ def load_rgbd_cam_from_pkl(root_dir: str, split:str, scene:str, timestamp:str, h
     dp = utils.load_dataset_npz(meta_path)
     # print("dp.keys():", dp.keys())
     
-    # Load extrinsics
-    extrs_rectified = dp['extrs_rectified']
+    # Load extrinsics (TODO Stefano: double check if this is indeed the right eye)
+    extrs_right = dp['extrs_rectified']
+    # use baseline to compute left camera extrinsics
+    baseline = 0.063  # meters
+    extrs_left = extrs_right.copy()
+    extrs_left[:, :3, 3] -= extrs_left[:, :3, 0] * baseline  # translate along x axis
     
     tracks3d = dp["track3d"]  # (N, T, 3)
-
-    input_dict['nfr'] = nfr
     
     depths = []
     uncertainties = []
@@ -136,10 +150,19 @@ def load_rgbd_cam_from_pkl(root_dir: str, split:str, scene:str, timestamp:str, h
         }
         # print("intr_normalized", intr_normalized)
         
+        input_dict['right']['camera'].append(
+            utils.CameraAZ(
+                from_json={
+                    'extr': extrs_right[fid][:3, :],
+                    'intr_normalized': intr_normalized,
+                }
+            )
+        )
+        
         input_dict['left']['camera'].append(
             utils.CameraAZ(
                 from_json={
-                    'extr': extrs_rectified[fid][:3, :],
+                    'extr': extrs_left[fid][:3, :],
                     'intr_normalized': intr_normalized,
                 }
             )
@@ -200,7 +223,7 @@ def load_rgbd_cam_from_pkl(root_dir: str, split:str, scene:str, timestamp:str, h
         for t in range(tracks3d.shape[1]):
             points3d = tracks3d[:, t, :]  # (N, 3)
             pose_c2w = np.eye(4, dtype=np.float32)
-            pose_c2w[:3, :4] = extrs_rectified[t]
+            pose_c2w[:3, :4] = extrs_right[t]
             
             points2d = utils.project_points_3d_to_2d(
                 points3d, K, pose_c2w
@@ -258,7 +281,7 @@ def load_rgbd_cam_from_pkl(root_dir: str, split:str, scene:str, timestamp:str, h
             points_depth[points_depth <= MIN_DEPTH] = np.nan  # mark invalid depth
             # unproject to 3d
             pose_c2w = np.eye(4, dtype=np.float32)
-            pose_c2w[:3, :4] = extrs_rectified[t]
+            pose_c2w[:3, :4] = extrs_right[t]
             points3d = utils.unproject_points_2d_to_3d(
                 points2d, points_depth, K, pose_c2w
             )  # (N, 3)
@@ -272,7 +295,7 @@ def load_rgbd_cam_from_pkl(root_dir: str, split:str, scene:str, timestamp:str, h
         rgbs,
         depths,
         K,
-        poses_c2w=extrs_rectified,
+        poses_c2w=(extrs_left, extrs_right),
         tracks3d=tracks3d if vis_tracks else None,
         instances_masks=instances_masks
     )

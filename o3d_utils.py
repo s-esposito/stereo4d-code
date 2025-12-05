@@ -298,7 +298,7 @@ class VideoPointCloudApp:
         self.rgbs = rgbs  # (T, H, W, 3)
         self.depths = depths  # (T, H, W)
         self.K = K
-        self.poses_c2w = poses_c2w  # (T, 4, 4)
+        self.poses_c2w = poses_c2w  # (T, 4, 4) or tuple of two (T, 4, 4)
         self.tracks3d = tracks3d  # (N, T, 3) or None
         self.instances_masks = instances_masks  # (T, H, W) or None
         self.is_running = True
@@ -313,34 +313,34 @@ class VideoPointCloudApp:
         
         # Precompute tracks colors
         if self.tracks3d is not None:
-          # Convert first coordinate of each track to color
-          self.tracks_colors = np.zeros_like(self.tracks3d[:, 0, :])
-          empty_color = np.ones_like(self.tracks_colors[:, 0], dtype=bool)
-          for fid in range(self.tracks3d.shape[1]):
-              points_at_fid = self.tracks3d[:, fid, :]
-              valid_points_mask = ~np.isnan(points_at_fid).any(axis=1) & ~np.isinf(points_at_fid).any(axis=1)
-              new_values_mask = valid_points_mask & empty_color
-              self.tracks_colors[new_values_mask] = points_at_fid[new_values_mask]
-              empty_color |= ~valid_points_mask
-              # check if all colors have been assigned
-              if not np.any(empty_color):
-                  break
-          min_x, max_x = np.min(self.tracks_colors[:, 0]), np.max(self.tracks_colors[:, 0])
-          min_y, max_y = np.min(self.tracks_colors[:, 1]), np.max(self.tracks_colors[:, 1])
-          min_z, max_z = np.min(self.tracks_colors[:, 2]), np.max(self.tracks_colors[:, 2])
-          # print(min_x, max_x, min_y, max_y, min_z, max_z)
-          self.tracks_colors[:, 0] = (self.tracks_colors[:, 0] - min_x) / (max_x - min_x + 1e-8)
-          self.tracks_colors[:, 1] = (self.tracks_colors[:, 1] - min_y) / (max_y - min_y + 1e-8)
-          self.tracks_colors[:, 2] = (self.tracks_colors[:, 2] - min_z) / (max_z - min_z + 1e-8)
-          # print(self.tracks_colors)
-          # exit(0)
-          # Limit number of tracks for performance
-          n_tracks = self.tracks3d.shape[0]
-          if n_tracks > max_tracks:
-              indices = np.linspace(0, n_tracks - 1, max_tracks).astype(int)
-              self.tracks3d = self.tracks3d[indices]
-              self.tracks_colors = self.tracks_colors[indices]
-              
+            # Convert first coordinate of each track to color
+            self.tracks_colors = np.zeros_like(self.tracks3d[:, 0, :])
+            empty_color = np.ones_like(self.tracks_colors[:, 0], dtype=bool)
+            for fid in range(self.tracks3d.shape[1]):
+                points_at_fid = self.tracks3d[:, fid, :]
+                valid_points_mask = ~np.isnan(points_at_fid).any(axis=1) & ~np.isinf(points_at_fid).any(axis=1)
+                new_values_mask = valid_points_mask & empty_color
+                self.tracks_colors[new_values_mask] = points_at_fid[new_values_mask]
+                empty_color |= ~valid_points_mask
+                # check if all colors have been assigned
+                if not np.any(empty_color):
+                    break
+            min_x, max_x = np.min(self.tracks_colors[:, 0]), np.max(self.tracks_colors[:, 0])
+            min_y, max_y = np.min(self.tracks_colors[:, 1]), np.max(self.tracks_colors[:, 1])
+            min_z, max_z = np.min(self.tracks_colors[:, 2]), np.max(self.tracks_colors[:, 2])
+            # print(min_x, max_x, min_y, max_y, min_z, max_z)
+            self.tracks_colors[:, 0] = (self.tracks_colors[:, 0] - min_x) / (max_x - min_x + 1e-8)
+            self.tracks_colors[:, 1] = (self.tracks_colors[:, 1] - min_y) / (max_y - min_y + 1e-8)
+            self.tracks_colors[:, 2] = (self.tracks_colors[:, 2] - min_z) / (max_z - min_z + 1e-8)
+            # print(self.tracks_colors)
+            # exit(0)
+            # Limit number of tracks for performance
+            n_tracks = self.tracks3d.shape[0]
+            if n_tracks > max_tracks:
+                indices = np.linspace(0, n_tracks - 1, max_tracks).astype(int)
+                self.tracks3d = self.tracks3d[indices]
+                self.tracks_colors = self.tracks_colors[indices]
+
         # Precompute instance colors if instance masks are provided
         if self.instances_masks is not None:
             self.instance_colors = []
@@ -410,60 +410,152 @@ class VideoPointCloudApp:
         print("Open3D GUI launched. Use the 'Frame Index' slider to navigate.")
     
     def _init_keyframes(self):
-      
-      # Add keyframes point clouds
-      keyframes_fids = list(range(0, len(self.rgbs), self.keyframes_interval))
-      for kf_fid in keyframes_fids:
+
+        # Add keyframes point clouds
+        keyframes_fids = list(range(0, len(self.rgbs), self.keyframes_interval))
+        for kf_fid in keyframes_fids:
         
-        # Add initial point cloud
-        if self.render_segmentation:
-            assert self.instances_masks is not None, "Instance masks must be provided for segmentation rendering."
-            rgb = self.instance_colors[self.instances_masks[kf_fid].reshape(-1)].reshape(self.instances_masks[kf_fid].shape[0], self.instances_masks[kf_fid].shape[1], -1)
-        else:
-            rgb = self.rgbs[kf_fid]
-          
-        pcd = generate_point_cloud(
-            rgb=rgb,
-            depth=self.depths[kf_fid],
-            K=self.K,
-            pose_c2w=self.poses_c2w[kf_fid]
-        )
-        self.scene_widget.scene.add_geometry(f"{self.PCD_NAME}_{kf_fid}", pcd, self.material)
+            # Add initial point cloud
+            if self.render_segmentation:
+                assert self.instances_masks is not None, "Instance masks must be provided for segmentation rendering."
+                rgb = self.instance_colors[self.instances_masks[kf_fid].reshape(-1)].reshape(self.instances_masks[kf_fid].shape[0], self.instances_masks[kf_fid].shape[1], -1)
+            else:
+                rgb = self.rgbs[kf_fid]
+            
+            # Check if stereo camera
+            if isinstance(self.poses_c2w, tuple):
+                # Use right camera pose
+                pose_c2w = self.poses_c2w[1][kf_fid]
+            else:
+                pose_c2w = self.poses_c2w[kf_fid]
+                
+            pcd = generate_point_cloud(
+                rgb=rgb,
+                depth=self.depths[kf_fid],
+                K=self.K,
+                pose_c2w=pose_c2w
+            )
+            self.scene_widget.scene.add_geometry(f"{self.PCD_NAME}_{kf_fid}", pcd, self.material)
     
     def _init_frame(self, fid=0):
-      
+
+        # Add current point cloud 
+        
+        pcd = self._update_point_cloud(fid)
+        
+        # Add current camera frustum
+        
+        self._update_camera_frustum(fid)
+        
+        # Add current camera trajectory
+        
+        self._update_camera_trajectory(fid)
+        
+        return pcd
+    
+    def _update_point_cloud(self, fid):
+        
+        # Remove existing point cloud
+        self.scene_widget.scene.remove_geometry(self.PCD_NAME)
+        
         # Add initial point cloud
         if self.render_segmentation:
             assert self.instances_masks is not None, "Instance masks must be provided for segmentation rendering."
             rgb = self.instance_colors[self.instances_masks[fid].reshape(-1)].reshape(self.instances_masks[fid].shape[0], self.instances_masks[fid].shape[1], -1)
         else:
             rgb = self.rgbs[fid]
-          
+        
+        # Check if stereo camera
+        if isinstance(self.poses_c2w, tuple):
+            # Use right camera pose
+            pose_c2w = self.poses_c2w[1][fid]
+        else:
+            pose_c2w = self.poses_c2w[fid]
+            
         pcd = generate_point_cloud(
             rgb=rgb,
             depth=self.depths[fid],
             K=self.K,
-            pose_c2w=self.poses_c2w[fid]
+            pose_c2w=pose_c2w
         )
         self.scene_widget.scene.add_geometry(self.PCD_NAME, pcd, self.material)
         
+        return pcd
+    
+    def _update_camera_trajectory(self, fid):
+        
+        # Remove existing trajectory if any
+        self.scene_widget.scene.remove_geometry(self.CAMERA_TRAJECTORY_NAME)
+        
         # Add camera trajectory (line connecting all camera positions)
-        if self.poses_c2w is not None and len(self.poses_c2w) > 1:
-            trajectory = create_camera_trajectory(self.poses_c2w, color=[0, 0.5, 1])
+            
+        # Check if stereo camera
+        if isinstance(self.poses_c2w, tuple):
+            # get average between left and right camera poses
+            # poses_c2w_left = self.poses_c2w[0]
+            poses_c2w_right = self.poses_c2w[1]
+            # poses_c2w = (poses_c2w_left + poses_c2w_right) / 2.0 (only for translation)
+            # poses_c2w = poses_c2w_right.copy()
+            # poses_c2w[:, :3, 3] = (poses_c2w_left[:, :3, 3] + poses_c2w_right[:, :3, 3]) / 2.0
+            poses_c2w = poses_c2w_right
+        else:
+            poses_c2w = self.poses_c2w
+
+        if len(poses_c2w) > 1:
+            trajectory = create_camera_trajectory(poses_c2w, color=[0, 0.5, 1])
             traj_material = rendering.MaterialRecord()
             traj_material.shader = "unlitLine"
             traj_material.line_width = 2.0
             self.scene_widget.scene.add_geometry(self.CAMERA_TRAJECTORY_NAME, trajectory, traj_material)
         
-        # Add current camera frustum
-        if self.poses_c2w is not None:
-            frustum = create_camera_frustum(self.poses_c2w[0], self.K)
+    def _update_tracks_3d(self, fid):
+        
+        # Remove existing track lines if any
+        self.scene_widget.scene.remove_geometry(self.TRACK_LINES_NAME)
+        
+        # Update track lines (trails)
+        track_lines = create_track_lines(self.tracks3d, self.tracks_colors, fid, trail_length=30)
+        if track_lines is not None:
+            track_lines_material = rendering.MaterialRecord()
+            track_lines_material.shader = "unlitLine"
+            track_lines_material.line_width = 4.0
+            self.scene_widget.scene.add_geometry(self.TRACK_LINES_NAME, track_lines, track_lines_material)
+    
+    def _update_camera_frustum(self, fid):
+        
+        # Check if stereo camera
+        
+        if isinstance(self.poses_c2w, tuple):
+            
+            # Remove existing frustums if any
+            self.scene_widget.scene.remove_geometry(f"{self.CAMERA_FRUSTUM_NAME}_left")
+            self.scene_widget.scene.remove_geometry(f"{self.CAMERA_FRUSTUM_NAME}_right")
+            
+            # Add left and right camera frustums if stereo
+            pose_c2w_left = self.poses_c2w[0][fid]
+            pose_c2w_right = self.poses_c2w[1][fid]
+            orange_color = [1, 0.5, 0]
+            blue_color = [0, 0.5, 1]
+            frustum_left = create_camera_frustum(pose_c2w_left, self.K, color=orange_color)
+            frustum_right = create_camera_frustum(pose_c2w_right, self.K, color=blue_color)
+            frustum_material = rendering.MaterialRecord()
+            frustum_material.shader = "unlitLine"
+            frustum_material.line_width = 2.0
+            self.scene_widget.scene.add_geometry(f"{self.CAMERA_FRUSTUM_NAME}_left", frustum_left, frustum_material)
+            self.scene_widget.scene.add_geometry(f"{self.CAMERA_FRUSTUM_NAME}_right", frustum_right, frustum_material)        
+        
+        else:
+            
+            # Remove existing frustum if any
+            self.scene_widget.scene.remove_geometry(self.CAMERA_FRUSTUM_NAME)
+            
+            # Add single camera frustum if not stereo
+            pose_c2w = self.poses_c2w[fid]
+            frustum = create_camera_frustum(pose_c2w, self.K)
             frustum_material = rendering.MaterialRecord()
             frustum_material.shader = "unlitLine"
             frustum_material.line_width = 2.0
             self.scene_widget.scene.add_geometry(self.CAMERA_FRUSTUM_NAME, frustum, frustum_material)
-        
-        return pcd
     
     def _setup_ui(self):
         em = self.window.theme.font_size
@@ -511,52 +603,29 @@ class VideoPointCloudApp:
     def _update_geometry(self, fid):
         """Helper to update the geometry based on frame index."""
         
-        if self.render_keyframes:
-            # If rendering keyframes, just return
-            return
-        
         if fid < 0 or fid >= len(self.rgbs):
             return
 
         self.state['fid'] = fid
         
-        if self.render_segmentation:
-            assert self.instances_masks is not None, "Instance masks must be provided for segmentation rendering."
-            rgb = self.instance_colors[self.instances_masks[fid].reshape(-1)].reshape(self.instances_masks[0].shape[0], self.instances_masks[0].shape[1], -1)
-        else:
-            rgb = self.rgbs[fid]
-        
-        # Generate new point cloud
-        new_pcd = generate_point_cloud(
-          rgb=rgb,
-          depth=self.depths[fid],
-          K=self.K,
-          pose_c2w=self.poses_c2w[fid]
-        )
-        
-        # Update Scene
-        self.scene_widget.scene.remove_geometry(self.PCD_NAME)
-        self.scene_widget.scene.add_geometry(self.PCD_NAME, new_pcd, self.material)
-        
         # Update camera frustum
-        if self.poses_c2w is not None:
-            self.scene_widget.scene.remove_geometry(self.CAMERA_FRUSTUM_NAME)
-            frustum = create_camera_frustum(self.poses_c2w[fid], self.K)
-            frustum_material = rendering.MaterialRecord()
-            frustum_material.shader = "unlitLine"
-            frustum_material.line_width = 2.0
-            self.scene_widget.scene.add_geometry(self.CAMERA_FRUSTUM_NAME, frustum, frustum_material)
+        self._update_camera_frustum(fid)
         
+        # Update camera trajectory
+        self._update_camera_trajectory(fid)
+
         # Update track visualizations
+        
         if self.tracks3d is not None and self.render_tracks:
-            # Update track lines (trails)
-            self.scene_widget.scene.remove_geometry(self.TRACK_LINES_NAME)
-            track_lines = create_track_lines(self.tracks3d, self.tracks_colors, fid, trail_length=30)
-            if track_lines is not None:
-                track_lines_material = rendering.MaterialRecord()
-                track_lines_material.shader = "unlitLine"
-                track_lines_material.line_width = 4.0
-                self.scene_widget.scene.add_geometry(self.TRACK_LINES_NAME, track_lines, track_lines_material)
+            # Update track lines
+            self._update_tracks_3d(fid)
+        
+        if self.render_keyframes:
+            # If rendering keyframes, just return
+            return
+        
+        # Update point cloud
+        self._update_point_cloud(fid)
 
     def _on_slider_changed(self, new_val):
         """Handle manual slider movement immediately."""
@@ -587,8 +656,6 @@ class VideoPointCloudApp:
             # Clean scene
             self.scene_widget.scene.remove_geometry(self.TRACK_LINES_NAME)
             self.scene_widget.scene.remove_geometry(self.PCD_NAME)
-            self.scene_widget.scene.remove_geometry(self.CAMERA_FRUSTUM_NAME)
-            self.scene_widget.scene.remove_geometry(self.CAMERA_TRAJECTORY_NAME)
             # Init keyframes
             self._init_keyframes()  # init keyframe rendering
         else:
@@ -629,12 +696,12 @@ class VideoPointCloudApp:
         return True
 
 def run_open3d_viewer(
-  rgbs: np.ndarray,
-  depths: np.ndarray,
-  K: np.ndarray,
-  poses_c2w: np.ndarray,
-  tracks3d: np.ndarray | None = None,
-  instances_masks: np.ndarray | None = None,
+    rgbs: np.ndarray,
+    depths: np.ndarray,
+    K: np.ndarray,
+    poses_c2w: tuple[np.ndarray, np.ndarray] | np.ndarray,
+    tracks3d: np.ndarray | None = None,
+    instances_masks: np.ndarray | None = None,
 ):
     gui.Application.instance.initialize()
     app = VideoPointCloudApp(rgbs, depths, K, poses_c2w, tracks3d, instances_masks)
