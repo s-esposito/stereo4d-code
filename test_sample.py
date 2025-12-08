@@ -56,27 +56,25 @@ def load_rgbd_cam_from_pkl(root_dir: str, split:str, scene:str, timestamp:str, h
     
     # Load sam data
     sam_data = None
+    semantic_instances_masks = {}
     if os.path.exists(sam_path):
         sam_data = np.load(sam_path, allow_pickle=True)
-        print("Loaded sam data from:", sam_path)
-        
-    # Plot sam masks for first frame
-    instances_masks = None
-    if sam_data is not None:
-        instances_masks = []
-        for fid in range(len(rgbs)):
-            objs_dict = sam_data[str(fid)].item()
-            instance_mask = np.zeros((height, width), dtype=np.int32)
-            for oid in objs_dict:
-                mask = objs_dict[oid]  # (N, H, W)
-                instance_mask[mask] = int(oid) + 1  # start from 1
-            instances_masks.append(instance_mask)
-            # plt.imshow(instance_mask, cmap='tab20')
-            # plt.colorbar()
-            # plt.savefig(f"sam_instance_mask_{fid:03d}.png")
-            # plt.close()
-        instances_masks = np.stack(instances_masks, axis=0)  # (N, H, W)
+        for key in sam_data:
+            value = sam_data[key]
+            if value is not None:
+                semantic_instances_masks[key] = sam_data[key]
     
+    # convert semantic instances masks to instances masks
+    instances_masks = None
+    nr_instances = 0
+    for key, instances in semantic_instances_masks.items():
+        if instances_masks is None:
+            instances_masks = instances.copy()
+        else:
+            non_zero = instances > 0
+            instances_masks[non_zero] += instances[non_zero] + nr_instances
+        nr_instances += len(np.unique(instances)) - 1  # exclude background
+        
     flow_as_disp = False
     if flow_as_disp:
         

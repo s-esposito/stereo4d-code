@@ -645,7 +645,15 @@ class VideoPointCloudApp:
         """Handle toggling of segmentation rendering."""
         self.render_segmentation = is_checked
         # Update geometry to reflect change
-        self._update_geometry(self.state['fid'])
+        if self.render_keyframes:
+            # Clean scene from keyframes
+            keyframes_fids = list(range(0, len(self.rgbs), self.keyframes_interval))
+            for kf_fid in keyframes_fids:
+                self.scene_widget.scene.remove_geometry(f"{self.PCD_NAME}_{kf_fid}")
+            # Re-init keyframe rendering
+            self._init_keyframes()
+        else:
+            self._update_geometry(self.state['fid'])
         
     def _on_show_keyframes_toggled(self, is_checked):
         """Handle toggling of keyframes visibility."""
