@@ -1,9 +1,23 @@
+#####################################################################
+# Script to download data files from a Google Cloud Storage bucket.
+# download_data.py
+# Usage:
+#   python download_data.py --destination_dir <path_to_save_files> --split <train/test/both> [--unique_scenes]
+# Options:
+#   --destination_dir: Directory to save downloaded files (default: "stereo4d-npz").
+#   --split: Data split to download ("train", "test", or "both"; default: "both").
+#   --unique_scenes: If set, only download unique scenes based on identifier (first timestamp).
+#####################################################################
+
 import os
 import argparse
 from tqdm import tqdm
 from google.cloud import storage
 from google.auth.exceptions import DefaultCredentialsError
+import utils
 
+
+    
 def list_gcs_files(bucket_name, split) -> list[str]:
     """
     Lists all files (blobs) in a Google Cloud Storage bucket
@@ -167,14 +181,7 @@ if __name__ == "__main__":
         
         if args.unique_scenes:
             # filter files to only include unique scenes based on identifier
-            unique_identifiers = set()
-            unique_files = []
-            for file in files:
-                identifier = file.split("_")[0]  # get the part before the first underscore
-                if identifier not in unique_identifiers:
-                    unique_identifiers.add(identifier)
-                    unique_files.append(file)
-            files = unique_files
+            files = utils.get_unique_scenes(files)
             print(f"Number of unique scene files in {split} split: {len(files)}")
         
         # iterate over files and download each one if not already downloaded

@@ -11,6 +11,19 @@ import matplotlib
 import open3d as o3d
 import matplotlib.pyplot as plt
 
+def get_unique_scenes(file_list):
+    
+    # filter files to only include unique scenes based on identifier
+    unique_identifiers = set()
+    unique_files_list = []
+    for file in file_list:
+        identifier = file.split("_")[0]  # get the part before the first underscore
+        if identifier not in unique_identifiers:
+            unique_identifiers.add(identifier)
+            unique_files_list.append(file)
+
+    return unique_files_list
+
 def load_video_frames(video_path):
     """
     Loads an MP4 video as a sequence of frames using OpenCV.
