@@ -8,8 +8,60 @@ from typing import List, Optional
 import cv2
 from matplotlib.collections import LineCollection
 import matplotlib
-import open3d as o3d
 import matplotlib.pyplot as plt
+
+
+def generate_point_cloud(rgb, depth, K, pose_c2w):
+    
+    xyz, scales = depth2xyz(depth, K)
+    rgb = rgb.reshape(-1, 3)
+    
+    # Transform points to world coordinates
+    xyz_hom = np.hstack([xyz, np.ones((xyz.shape[0], 1))])
+    xyz = (pose_c2w @ xyz_hom.T).T[:, :3]
+    
+    # filter valid points
+    mask = (depth.reshape(-1) > 0)
+    xyz = xyz[mask]
+    rgb = rgb[mask]
+    scales = scales[mask]
+    
+    return xyz, rgb, scales
+
+
+# def compute_conegs_scaling(
+#     points_3d_camera: np.ndarray,
+#     points_depth: np.ndarray,
+#     K: np.ndarray,
+# ) -> np.ndarray:
+#     """
+#     points_3d_camera: (N, 3) camera-space 3D points for each pixel
+#     points_depth:   (N,) z-depth for each pixel
+#     K_inv:            (3, 3) inverse intrinsics
+#     returns:
+#         (N, 3) isotropic Gaussian stddev per pixel
+#     """
+#     eps = 1e-6
+#     K_inv = np.linalg.inv(K)
+    
+#     # Unnormalized ray direction for each pixel:
+#     # p_cam = z * d  =>  d = p_cam / z
+#     z = points_3d_camera[:, 2].clip(min=eps)  # (N,)
+#     d = points_3d_camera / z[:, None]  # (N,3)
+#     d_norm = np.linalg.norm(d, axis=1).clip(min=eps)  # (N,)
+
+#     # Metric distance from camera origin to the 3D point (along the ray)
+#     s = points_depth  # (N,)
+
+#     # Constant pixel footprint (no distortion)
+#     col0 = K_inv[:, 0]
+#     col1 = K_inv[:, 1]
+#     pixel_width = 0.5 * (np.linalg.norm(col0) + np.linalg.norm(col1))
+
+#     pixel_width = pixel_width * (2.0 / math.sqrt(12.0))
+
+#     sigma = pixel_width * (s / d_norm)  # (N,)
+#     return sigma[:, None]
 
 
 def sample_depth_from_2d_points(points2d, depth_map):
@@ -132,6 +184,7 @@ def depth2xyz(depth, K):
     fy = K[1, 1]
     cx = K[0, 2]
     cy = K[1, 2]
+    K_inv = np.linalg.inv(K)
     
     # Create pixel coordinate grid
     # u: horizontal pixel coordinate (column index, x direction)
@@ -161,7 +214,19 @@ def depth2xyz(depth, K):
     # Stack into (N, 3) array
     points_3d = np.stack([x, y, z], axis=1)
     
-    return points_3d
+    # Metric distance from camera origin to the 3D point (along the ray)
+    d_norm = np.linalg.norm(points_3d, axis=1)  # (N,)
+    
+    # Constant pixel footprint (no distortion)
+    col0 = K_inv[:, 0]
+    col1 = K_inv[:, 1]
+    pixel_width = 0.5 * (np.linalg.norm(col0) + np.linalg.norm(col1))
+
+    pixel_width = pixel_width * (2.0 / math.sqrt(12.0))
+
+    sigmas = pixel_width * (z / d_norm)  # (N,)
+    
+    return points_3d, sigmas
 
 
 def get_unique_scenes(file_list):

@@ -268,23 +268,13 @@ def create_track_lines(tracks3d, tracks_colors, current_frame, trail_length=10):
     
     return line_set
 
-def generate_point_cloud(rgb, depth, K, pose_c2w):
+def generate_o3d_point_cloud(rgb, depth, K, pose_c2w):
     """
     Generates a dummy point cloud that changes only its position and color 
     with the frame index (fid), maintaining a consistent scale.
     """
     
-    xyz = utils.depth2xyz(depth, K)
-    rgb = rgb.reshape(-1, 3)
-    
-    # Transform points to world coordinates
-    xyz_hom = np.hstack([xyz, np.ones((xyz.shape[0], 1))])
-    xyz = (pose_c2w @ xyz_hom.T).T[:, :3]
-    
-    # filter valid points
-    mask = (depth.reshape(-1) > 0)
-    xyz = xyz[mask]
-    rgb = rgb[mask]
+    xyz, rgb, _ = utils.generate_point_cloud(rgb, depth, K, pose_c2w)
     
     # Create the Open3D point cloud object
     pcd = toOpen3dCloud(xyz, rgb)
@@ -307,7 +297,7 @@ class VideoPointCloudApp:
         self.keyframes_interval = 10
         
         # Rendering flags
-        self.render_tracks = True
+        self.render_tracks = False
         self.render_segmentation = False
         self.render_keyframes = False
         
@@ -416,8 +406,7 @@ class VideoPointCloudApp:
         for kf_fid in keyframes_fids:
         
             # Add initial point cloud
-            if self.render_segmentation:
-                assert self.instances_masks is not None, "Instance masks must be provided for segmentation rendering."
+            if self.render_segmentation and self.instances_masks is not None:
                 rgb = self.instance_colors[self.instances_masks[kf_fid].reshape(-1)].reshape(self.instances_masks[kf_fid].shape[0], self.instances_masks[kf_fid].shape[1], -1)
             else:
                 rgb = self.rgbs[kf_fid]
@@ -429,7 +418,7 @@ class VideoPointCloudApp:
             else:
                 pose_c2w = self.poses_c2w[kf_fid]
                 
-            pcd = generate_point_cloud(
+            pcd = generate_o3d_point_cloud(
                 rgb=rgb,
                 depth=self.depths[kf_fid],
                 K=self.K,
@@ -459,8 +448,7 @@ class VideoPointCloudApp:
         self.scene_widget.scene.remove_geometry(self.PCD_NAME)
         
         # Add initial point cloud
-        if self.render_segmentation:
-            assert self.instances_masks is not None, "Instance masks must be provided for segmentation rendering."
+        if self.render_segmentation and self.instances_masks is not None:
             rgb = self.instance_colors[self.instances_masks[fid].reshape(-1)].reshape(self.instances_masks[fid].shape[0], self.instances_masks[fid].shape[1], -1)
         else:
             rgb = self.rgbs[fid]
@@ -472,7 +460,7 @@ class VideoPointCloudApp:
         else:
             pose_c2w = self.poses_c2w[fid]
             
-        pcd = generate_point_cloud(
+        pcd = generate_o3d_point_cloud(
             rgb=rgb,
             depth=self.depths[fid],
             K=self.K,
@@ -706,11 +694,16 @@ class VideoPointCloudApp:
 def run_open3d_viewer(
     rgbs: np.ndarray,
     depths: np.ndarray,
-    K: np.ndarray,
+    intr_normalized: dict,
+    width: int, height: int,
     poses_c2w: tuple[np.ndarray, np.ndarray] | np.ndarray,
     tracks3d: np.ndarray | None = None,
     instances_masks: np.ndarray | None = None,
 ):
+    K = intr_normalized.copy()
+    K[0, :] *= width
+    K[1, :] *= height
+    
     gui.Application.instance.initialize()
     app = VideoPointCloudApp(rgbs, depths, K, poses_c2w, tracks3d, instances_masks)
     gui.Application.instance.run()
