@@ -1,7 +1,10 @@
 import utils
+from tqdm import tqdm
 import open3d as o3d
 import open3d.visualization.gui as gui
+from open3d.visualization.gui import SceneWidget, Application
 import open3d.visualization.rendering as rendering
+from open3d.visualization.rendering import OffscreenRenderer, MaterialRecord, Open3DScene
 import numpy as np
 import time
 import matplotlib
@@ -112,10 +115,10 @@ def create_camera_frustum(c2w, K, size=0.2, color=[0, 0, 0]):
     # Frustum in image space (pixels)
     
     points_2d_screen = np.array([
-      [0, 0], # Bottom-left
-      [K[0,2]*2, 0], # Bottom-right
-      [K[0,2]*2, K[1,2]*2], # Top-right
-      [0, K[1,2]*2],  # Top-left
+        [0, 0], # Bottom-left
+        [K[0,2]*2, 0], # Bottom-right
+        [K[0,2]*2, K[1,2]*2], # Top-right
+        [0, K[1,2]*2],  # Top-left
     ])
     
     u = points_2d_screen[:, 0]
@@ -166,29 +169,43 @@ def create_camera_frustum(c2w, K, size=0.2, color=[0, 0, 0]):
     
     return line_set
 
-def create_camera_trajectory(poses_c2w, color=[0, 0, 1]):
+def create_camera_trajectory(poses_c2w, color=[0.0, 0.0, 1.0]):
     """
     Create a line showing the camera trajectory through all poses.
     
     Args:
         poses_c2w: (T, 4, 4) array of camera-to-world matrices
-        color: RGB color for the trajectory line
+        color: RGB color for the trajectory line, expected in [0.0, 1.0] range.
     
     Returns:
         Open3D LineSet representing the camera trajectory
     """
-    # Extract camera centers from poses
+    if len(poses_c2w) < 2:
+        # Need at least 2 poses to form a line segment
+        return o3d.geometry.LineSet() 
+
+    # Extract camera centers (translation vector is the 4th column, first 3 rows)
     centers = poses_c2w[:, :3, 3]
     
     # Create lines connecting consecutive camera positions
-    points = centers
+    points = centers # (N, 3) float array of camera centers
     lines = [[i, i+1] for i in range(len(centers) - 1)]
+    # lines is a list of lists/tuples, e.g., [[0, 1], [1, 2], ...]
     
     line_set = o3d.geometry.LineSet()
-    line_set.points = o3d.utility.Vector3dVector(points)
-    line_set.lines = o3d.utility.Vector2iVector(np.array(lines))
-    colors_list = [color for _ in range(len(lines))]
-    line_set.colors = o3d.utility.Vector3dVector(colors_list)
+    
+    # Convert points (float) and lines (int) to Open3D vector types
+    line_set.points = o3d.utility.Vector3dVector(points.astype(np.float64))
+    line_set.lines = o3d.utility.Vector2iVector(np.array(lines).astype(np.int32))
+    
+    # Create colors for each line segment
+    num_lines = len(lines)
+    
+    # Ensure color is a numpy array of floats (Open3D standard for Vector3dVector)
+    color_np = np.array(color, dtype=np.float64).reshape(1, 3) 
+    colors_array = np.tile(color_np, (num_lines, 1)) # (num_lines, 3) array
+    
+    line_set.colors = o3d.utility.Vector3dVector(colors_array)
     
     return line_set
 
@@ -209,7 +226,7 @@ def create_track_lines(tracks3d, tracks_colors, current_frame, trail_length=10):
     # Need at least 2 frames to draw lines
     if current_frame < 1:
         return None
-      
+
     # Visible list by checking for non-NaN points and non-Inf points
     visible_list = ~np.isnan(tracks3d).any(axis=2) & ~np.isinf(tracks3d).any(axis=2)
     
@@ -226,11 +243,11 @@ def create_track_lines(tracks3d, tracks_colors, current_frame, trail_length=10):
         # Include current_frame in the range
         for frame_idx in range(start_frame, current_frame + 1):
             if visible_list[track_idx, frame_idx]:
-              track_points.append(tracks3d[track_idx, frame_idx])
+                track_points.append(tracks3d[track_idx, frame_idx])
         
         # Only create lines if we have at least 2 visible points
         if len(track_points) >= 2:
-          
+
             start_idx = len(points)
             points.extend(track_points)
             
@@ -280,9 +297,54 @@ def generate_o3d_point_cloud(rgb, depth, K, pose_c2w):
     pcd = toOpen3dCloud(xyz, rgb)
     return pcd
 
+def compute_tracks_colors(tracks3d):
 
-class VideoPointCloudApp:
+    # Convert first coordinate of each track to color
+    tracks_colors = np.zeros_like(tracks3d[:, 0, :])
+    empty_color = np.ones_like(tracks_colors[:, 0], dtype=bool)
+    for fid in range(tracks3d.shape[1]):
+        points_at_fid = tracks3d[:, fid, :]
+        valid_points_mask = ~np.isnan(points_at_fid).any(axis=1) & ~np.isinf(points_at_fid).any(axis=1)
+        new_values_mask = valid_points_mask & empty_color
+        tracks_colors[new_values_mask] = points_at_fid[new_values_mask]
+        empty_color |= ~valid_points_mask
+        # check if all colors have been assigned
+        if not np.any(empty_color):
+            break
+    min_x, max_x = np.min(tracks_colors[:, 0]), np.max(tracks_colors[:, 0])
+    min_y, max_y = np.min(tracks_colors[:, 1]), np.max(tracks_colors[:, 1])
+    min_z, max_z = np.min(tracks_colors[:, 2]), np.max(tracks_colors[:, 2])
+    # print(min_x, max_x, min_y, max_y, min_z, max_z)
+    tracks_colors[:, 0] = (tracks_colors[:, 0] - min_x) / (max_x - min_x + 1e-8)
+    tracks_colors[:, 1] = (tracks_colors[:, 1] - min_y) / (max_y - min_y + 1e-8)
+    tracks_colors[:, 2] = (tracks_colors[:, 2] - min_z) / (max_z - min_z + 1e-8)
+    
+    return tracks_colors
+
+def compute_instances_colors(instances_masks):
+
+    instance_colors = []
+    # Append black for background (instance 0)
+    instance_colors.append(np.array([0, 0, 0]))
+    # Instances start from 1
+    num_instances = np.max(instances_masks)
+    cmap = matplotlib.cm.get_cmap('tab20', num_instances)
+    for i in range(num_instances):
+        color = cmap(i)[:3]  # Get RGB color
+        instance_colors.append(np.array(color))
+    instance_colors = np.array(instance_colors) * 255.0
+    instance_colors = instance_colors.astype(np.uint8)
+    
+    return instance_colors
+
+class Renderer:
     def __init__(self, rgbs, depths, K, poses_c2w, tracks3d=None, instances_masks=None, max_tracks=3000):
+        
+        # Rendering flags
+        self.render_tracks = False
+        self.render_segmentation = False
+        self.render_keyframes = False
+        
         # Initialize State
         self.state = {'fid': 0}
         self.rgbs = rgbs  # (T, H, W, 3)
@@ -291,115 +353,120 @@ class VideoPointCloudApp:
         self.poses_c2w = poses_c2w  # (T, 4, 4) or tuple of two (T, 4, 4)
         self.tracks3d = tracks3d  # (N, T, 3) or None
         self.instances_masks = instances_masks  # (T, H, W) or None
-        self.is_running = True
-        self.last_update_time = time.time()
-        self.update_interval = 0.03 # 30ms
-        self.keyframes_interval = 10
-        
-        # Rendering flags
-        self.render_tracks = False
-        self.render_segmentation = False
-        self.render_keyframes = False
+        self.keyframes_interval = 10   
         
         # Precompute tracks colors
         if self.tracks3d is not None:
-            # Convert first coordinate of each track to color
-            self.tracks_colors = np.zeros_like(self.tracks3d[:, 0, :])
-            empty_color = np.ones_like(self.tracks_colors[:, 0], dtype=bool)
-            for fid in range(self.tracks3d.shape[1]):
-                points_at_fid = self.tracks3d[:, fid, :]
-                valid_points_mask = ~np.isnan(points_at_fid).any(axis=1) & ~np.isinf(points_at_fid).any(axis=1)
-                new_values_mask = valid_points_mask & empty_color
-                self.tracks_colors[new_values_mask] = points_at_fid[new_values_mask]
-                empty_color |= ~valid_points_mask
-                # check if all colors have been assigned
-                if not np.any(empty_color):
-                    break
-            min_x, max_x = np.min(self.tracks_colors[:, 0]), np.max(self.tracks_colors[:, 0])
-            min_y, max_y = np.min(self.tracks_colors[:, 1]), np.max(self.tracks_colors[:, 1])
-            min_z, max_z = np.min(self.tracks_colors[:, 2]), np.max(self.tracks_colors[:, 2])
-            # print(min_x, max_x, min_y, max_y, min_z, max_z)
-            self.tracks_colors[:, 0] = (self.tracks_colors[:, 0] - min_x) / (max_x - min_x + 1e-8)
-            self.tracks_colors[:, 1] = (self.tracks_colors[:, 1] - min_y) / (max_y - min_y + 1e-8)
-            self.tracks_colors[:, 2] = (self.tracks_colors[:, 2] - min_z) / (max_z - min_z + 1e-8)
-            # print(self.tracks_colors)
-            # exit(0)
+            self.tracks_colors = compute_tracks_colors(self.tracks3d)
+            
             # Limit number of tracks for performance
             n_tracks = self.tracks3d.shape[0]
             if n_tracks > max_tracks:
                 indices = np.linspace(0, n_tracks - 1, max_tracks).astype(int)
                 self.tracks3d = self.tracks3d[indices]
                 self.tracks_colors = self.tracks_colors[indices]
-
+                
         # Precompute instance colors if instance masks are provided
         if self.instances_masks is not None:
-            self.instance_colors = []
-            # Append black for background (instance 0)
-            self.instance_colors.append(np.array([0, 0, 0]))
-            # Instances start from 1
-            num_instances = np.max(self.instances_masks)
-            cmap = matplotlib.cm.get_cmap('tab20', num_instances)
-            for i in range(num_instances):
-                color = cmap(i)[:3]  # Get RGB color
-                self.instance_colors.append(np.array(color))
-            self.instance_colors = np.array(self.instance_colors) * 255.0
-            self.instance_colors = self.instance_colors.astype(np.uint8)
-            print("Instance colors:", self.instance_colors)
-
-        # Setup Window
-        self.window = gui.Application.instance.create_window(
-            "Open3D Video Point Cloud Viewer", 1920, 1080)
-        self.window.set_on_close(self._on_close)
-        
-        # Setup Scene Widget (3D Viewport)
-        self.scene_widget = gui.SceneWidget()
-        self.scene_widget.scene = rendering.Open3DScene(self.window.renderer)
-        self.window.add_child(self.scene_widget)
-        
-        # Disable color correction/gamma correction by setting background to white
-        # and disabling post-processing
-        self.scene_widget.scene.set_background([1, 1, 1, 1])  # White background
-        
+            self.instance_colors = compute_instances_colors(self.instances_masks)
+            
         # Setup Material and Initial Geometry
-        self.material = rendering.MaterialRecord()
+        self.material = MaterialRecord()
         self.material.shader = "defaultUnlit"  # Unlit shader bypasses lighting calculations
-        self.material.point_size = 3.0 
+        self.material.point_size = 1.0
         
         self.PCD_NAME = "current_point_cloud"
         self.CAMERA_TRAJECTORY_NAME = "camera_trajectory"
         self.CAMERA_FRUSTUM_NAME = "current_camera_frustum"
         self.TRACK_LINES_NAME = "track_lines"
         
-        # Add coordinate frame at world origin
-        coord_frame = create_coordinate_frame(size=0.2, origin=[0, 0, 0])
-        coord_material = rendering.MaterialRecord()
-        coord_material.shader = "defaultUnlit"
-        self.scene_widget.scene.add_geometry("coordinate_frame", coord_frame, coord_material)
+        self.o3d_renderer: OffscreenRenderer | SceneWidget = None  # to be initialized in the viewer setup
+            
+    def _update_geometry(self, fid):
+        """Helper to update the geometry based on frame index."""
         
-        # Add grid on XZ plane (ground plane, perpendicular to Y axis)
-        grid = create_grid(size=20.0, n=20, plane='xz', height=0.0)
-        grid_material = rendering.MaterialRecord()
-        grid_material.shader = "unlitLine"
-        grid_material.line_width = 1.0
-        self.scene_widget.scene.add_geometry("grid", grid, grid_material)
+        assert self.o3d_renderer is not None, "Renderer not initialized."
         
-        # Init first frame
-        initial_pcd = self._init_frame(fid=0)
-        
-        # Set Camera View
-        bounds = initial_pcd.get_axis_aligned_bounding_box()
-        self.scene_widget.setup_camera(60, bounds, bounds.get_center())
+        if fid < 0 or fid >= len(self.rgbs):
+            return
 
-        # Setup UI Panel (Slider)
-        self._setup_ui()
+        self.state['fid'] = fid
         
-        # Register the tick callback
-        # FIX: Use set_on_tick_event on the window instead of add_timer on the app
-        self.window.set_on_tick_event(self._on_tick)
+        # Update camera frustum
+        self._update_camera_frustum(fid)
         
-        print("Open3D GUI launched. Use the 'Frame Index' slider to navigate.")
+        # Update camera trajectory
+        self._update_camera_trajectory(fid)
+
+        # Update track visualizations
+        
+        if self.tracks3d is not None and self.render_tracks:
+            # Update track lines
+            self._update_tracks_3d(fid)
+        else:
+            # Remove existing track lines if any
+            self.o3d_renderer.scene.remove_geometry(self.TRACK_LINES_NAME)
+        
+        if self.render_keyframes:
+            # If rendering keyframes, just return
+            return
+        
+        # Update point cloud
+        self._update_point_cloud(fid)
+
+    def _setup_o3d_renderer(self):
+        
+        assert self.o3d_renderer is not None, "Renderer not initialized."
+        
+        # Disable color correction/gamma correction by setting background to white
+        # and disabling post-processing
+        self.o3d_renderer.scene.set_background([1, 1, 1, 1])  # White background
+        
+        # Access the View instance via the scene object
+        view_instance = self.o3d_renderer.scene.view 
+        
+        # Ensure post-processing is ON for anti-aliasing
+        view_instance.set_post_processing(True)
+
+        # The following config does not seem to be working as expected
+        
+        # Configure Anti-Aliasing
+        # Use True for Fast Approximate Anti-Aliasing (FXAA) or other methods
+        view_instance.set_antialiasing(True) 
+
+        # Configure Color Grading to use LINEAR tone mapping
+        color_grading_linear = rendering.ColorGrading(
+            rendering.ColorGrading.Quality.MEDIUM,
+            # This is the crucial step: use LINEAR to skip gamma correction
+            rendering.ColorGrading.ToneMapping.LINEAR,
+        )
+
+        # Apply the linear color grading to the view
+        view_instance.set_color_grading(color_grading_linear)
+    
+    def _init_coord_frame(self):
+        
+        assert self.o3d_renderer is not None, "Renderer not initialized."
+
+        coord_frame = create_coordinate_frame(size=0.2, origin=[0, 0, 0])
+        coord_material = MaterialRecord()
+        coord_material.shader = "defaultUnlit"
+        self.o3d_renderer.scene.add_geometry("coordinate_frame", coord_frame, coord_material)
+    
+    def _init_grid_xz(self):
+        assert self.o3d_renderer is not None, "Renderer not initialized."
+
+        grid = create_grid(size=20.0, n=20, plane='xz', height=0.0)
+        grid_material = MaterialRecord()
+        grid_material.shader = "unlitLine"
+        grid_material.line_width = 0.5
+        # make transparent
+        # grid_material.base_color = [0.5, 0.5, 0.5, 0.0]
+        self.o3d_renderer.scene.add_geometry("grid", grid, grid_material)
     
     def _init_keyframes(self):
+        
+        assert self.o3d_renderer is not None, "Renderer not initialized."
 
         # Add keyframes point clouds
         keyframes_fids = list(range(0, len(self.rgbs), self.keyframes_interval))
@@ -424,10 +491,12 @@ class VideoPointCloudApp:
                 K=self.K,
                 pose_c2w=pose_c2w
             )
-            self.scene_widget.scene.add_geometry(f"{self.PCD_NAME}_{kf_fid}", pcd, self.material)
+            self.o3d_renderer.scene.add_geometry(f"{self.PCD_NAME}_{kf_fid}", pcd, self.material)
     
     def _init_frame(self, fid=0):
 
+        assert self.o3d_renderer is not None, "Renderer not initialized."
+        
         # Add current point cloud 
         
         pcd = self._update_point_cloud(fid)
@@ -444,8 +513,10 @@ class VideoPointCloudApp:
     
     def _update_point_cloud(self, fid):
         
+        assert self.o3d_renderer is not None, "Renderer not initialized."
+        
         # Remove existing point cloud
-        self.scene_widget.scene.remove_geometry(self.PCD_NAME)
+        self.o3d_renderer.scene.remove_geometry(self.PCD_NAME)
         
         # Add initial point cloud
         if self.render_segmentation and self.instances_masks is not None:
@@ -466,58 +537,67 @@ class VideoPointCloudApp:
             K=self.K,
             pose_c2w=pose_c2w
         )
-        self.scene_widget.scene.add_geometry(self.PCD_NAME, pcd, self.material)
+        self.o3d_renderer.scene.add_geometry(self.PCD_NAME, pcd, self.material)
         
         return pcd
     
     def _update_camera_trajectory(self, fid):
         
+        assert self.o3d_renderer is not None, "Renderer not initialized."
+        
         # Remove existing trajectory if any
-        self.scene_widget.scene.remove_geometry(self.CAMERA_TRAJECTORY_NAME)
+        self.o3d_renderer.scene.remove_geometry(self.CAMERA_TRAJECTORY_NAME)
         
         # Add camera trajectory (line connecting all camera positions)
             
         # Check if stereo camera
         if isinstance(self.poses_c2w, tuple):
             # get average between left and right camera poses
-            # poses_c2w_left = self.poses_c2w[0]
+            poses_c2w_left = self.poses_c2w[0]
             poses_c2w_right = self.poses_c2w[1]
             # poses_c2w = (poses_c2w_left + poses_c2w_right) / 2.0 (only for translation)
-            # poses_c2w = poses_c2w_right.copy()
-            # poses_c2w[:, :3, 3] = (poses_c2w_left[:, :3, 3] + poses_c2w_right[:, :3, 3]) / 2.0
-            poses_c2w = poses_c2w_right
+            poses_c2w = poses_c2w_right.copy()
+            poses_c2w[:, :3, 3] = (poses_c2w_left[:, :3, 3] + poses_c2w_right[:, :3, 3]) / 2.0
+            # poses_c2w = poses_c2w_right
         else:
             poses_c2w = self.poses_c2w
 
-        if len(poses_c2w) > 1:
-            trajectory = create_camera_trajectory(poses_c2w, color=[0, 0.5, 1])
-            traj_material = rendering.MaterialRecord()
-            traj_material.shader = "unlitLine"
-            traj_material.line_width = 2.0
-            self.scene_widget.scene.add_geometry(self.CAMERA_TRAJECTORY_NAME, trajectory, traj_material)
+        # filter out poses after current fid
+        poses_c2w = poses_c2w[:fid+1]
+        
+        trajectory = create_camera_trajectory(poses_c2w, color=[0, 0.5, 1])
+        
+        traj_material = MaterialRecord()
+        traj_material.shader = "unlitLine"
+        traj_material.line_width = 2.0
+        self.o3d_renderer.scene.add_geometry(self.CAMERA_TRAJECTORY_NAME, trajectory, traj_material)
         
     def _update_tracks_3d(self, fid):
         
+        assert self.o3d_renderer is not None, "Renderer not initialized."
+        
         # Remove existing track lines if any
-        self.scene_widget.scene.remove_geometry(self.TRACK_LINES_NAME)
+        self.o3d_renderer.scene.remove_geometry(self.TRACK_LINES_NAME)
         
         # Update track lines (trails)
         track_lines = create_track_lines(self.tracks3d, self.tracks_colors, fid, trail_length=30)
         if track_lines is not None:
-            track_lines_material = rendering.MaterialRecord()
+            track_lines_material = MaterialRecord()
             track_lines_material.shader = "unlitLine"
-            track_lines_material.line_width = 4.0
-            self.scene_widget.scene.add_geometry(self.TRACK_LINES_NAME, track_lines, track_lines_material)
+            track_lines_material.line_width = 1.0
+            self.o3d_renderer.scene.add_geometry(self.TRACK_LINES_NAME, track_lines, track_lines_material)
     
     def _update_camera_frustum(self, fid):
+        
+        assert self.o3d_renderer is not None, "Renderer not initialized."
         
         # Check if stereo camera
         
         if isinstance(self.poses_c2w, tuple):
             
             # Remove existing frustums if any
-            self.scene_widget.scene.remove_geometry(f"{self.CAMERA_FRUSTUM_NAME}_left")
-            self.scene_widget.scene.remove_geometry(f"{self.CAMERA_FRUSTUM_NAME}_right")
+            self.o3d_renderer.scene.remove_geometry(f"{self.CAMERA_FRUSTUM_NAME}_left")
+            self.o3d_renderer.scene.remove_geometry(f"{self.CAMERA_FRUSTUM_NAME}_right")
             
             # Add left and right camera frustums if stereo
             pose_c2w_left = self.poses_c2w[0][fid]
@@ -526,26 +606,68 @@ class VideoPointCloudApp:
             blue_color = [0, 0.5, 1]
             frustum_left = create_camera_frustum(pose_c2w_left, self.K, color=orange_color)
             frustum_right = create_camera_frustum(pose_c2w_right, self.K, color=blue_color)
-            frustum_material = rendering.MaterialRecord()
+            frustum_material = MaterialRecord()
             frustum_material.shader = "unlitLine"
             frustum_material.line_width = 2.0
-            self.scene_widget.scene.add_geometry(f"{self.CAMERA_FRUSTUM_NAME}_left", frustum_left, frustum_material)
-            self.scene_widget.scene.add_geometry(f"{self.CAMERA_FRUSTUM_NAME}_right", frustum_right, frustum_material)        
+            self.o3d_renderer.scene.add_geometry(f"{self.CAMERA_FRUSTUM_NAME}_left", frustum_left, frustum_material)
+            self.o3d_renderer.scene.add_geometry(f"{self.CAMERA_FRUSTUM_NAME}_right", frustum_right, frustum_material)        
         
         else:
             
             # Remove existing frustum if any
-            self.scene_widget.scene.remove_geometry(self.CAMERA_FRUSTUM_NAME)
+            self.o3d_renderer.scene.remove_geometry(self.CAMERA_FRUSTUM_NAME)
             
             # Add single camera frustum if not stereo
             pose_c2w = self.poses_c2w[fid]
             frustum = create_camera_frustum(pose_c2w, self.K)
-            frustum_material = rendering.MaterialRecord()
+            frustum_material = MaterialRecord()
             frustum_material.shader = "unlitLine"
             frustum_material.line_width = 2.0
-            self.scene_widget.scene.add_geometry(self.CAMERA_FRUSTUM_NAME, frustum, frustum_material)
+            self.o3d_renderer.scene.add_geometry(self.CAMERA_FRUSTUM_NAME, frustum, frustum_material)
+    
+class OnlineRendererApp(Renderer):
+    def __init__(self, rgbs, depths, K, poses_c2w, tracks3d=None, instances_masks=None, max_tracks=3000):
+        super().__init__(rgbs, depths, K, poses_c2w, tracks3d, instances_masks, max_tracks)
+        
+        self.is_running = True
+        self.last_update_time = time.time()
+        self.update_interval = 0.03 # 30ms  
+
+        # Setup Window
+        self.window = Application.instance.create_window(
+            "Open3D Video Point Cloud Viewer", 1920, 1080)
+        self.window.set_on_close(self._on_close)
+        
+        # Setup Scene Widget (3D Viewport)
+        self.o3d_renderer = SceneWidget()
+        self.o3d_renderer.scene = Open3DScene(self.window.renderer)
+        self.window.add_child(self.o3d_renderer)
+        
+        # Setup UI Panel (Slider)
+        self._setup_ui()
+        
+        # Setup Open3D Renderer
+        self._setup_o3d_renderer()
+        
+        # Add coordinate frame at world origin
+        self._init_coord_frame()
+        
+        # Add grid on XZ plane (ground plane, perpendicular to Y axis)
+        self._init_grid_xz()
+        
+        # Init first frame
+        initial_pcd = self._init_frame(fid=0)
+        
+        # Set Camera View
+        bounds = initial_pcd.get_axis_aligned_bounding_box()
+        self.o3d_renderer.setup_camera(60, bounds, bounds.get_center())
+
+        # Register the tick callback
+        # FIX: Use set_on_tick_event on the window instead of add_timer on the app
+        self.window.set_on_tick_event(self._on_tick)
     
     def _setup_ui(self):
+        
         em = self.window.theme.font_size
         self.panel = gui.Widget()
         # Store the layout as a member variable so we can resize it in _on_layout
@@ -586,34 +708,7 @@ class VideoPointCloudApp:
         # Panel is positioned at the top
         self.panel.frame = gui.Rect(r.x, r.y, r.width, panel_height)
         # Scene widget takes the bottom portion
-        self.scene_widget.frame = gui.Rect(r.x, r.y + panel_height, r.width, r.height - panel_height)
-
-    def _update_geometry(self, fid):
-        """Helper to update the geometry based on frame index."""
-        
-        if fid < 0 or fid >= len(self.rgbs):
-            return
-
-        self.state['fid'] = fid
-        
-        # Update camera frustum
-        self._update_camera_frustum(fid)
-        
-        # Update camera trajectory
-        self._update_camera_trajectory(fid)
-
-        # Update track visualizations
-        
-        if self.tracks3d is not None and self.render_tracks:
-            # Update track lines
-            self._update_tracks_3d(fid)
-        
-        if self.render_keyframes:
-            # If rendering keyframes, just return
-            return
-        
-        # Update point cloud
-        self._update_point_cloud(fid)
+        self.o3d_renderer.frame = gui.Rect(r.x, r.y + panel_height, r.width, r.height - panel_height)
 
     def _on_slider_changed(self, new_val):
         """Handle manual slider movement immediately."""
@@ -625,7 +720,7 @@ class VideoPointCloudApp:
         """Handle toggling of 3D tracks visibility."""
         self.render_tracks = is_checked
         # Remove previously added tracks if any
-        self.scene_widget.scene.remove_geometry(self.TRACK_LINES_NAME)
+        self.o3d_renderer.scene.remove_geometry(self.TRACK_LINES_NAME)
         # Update geometry to reflect change
         self._update_geometry(self.state['fid'])
         
@@ -637,7 +732,7 @@ class VideoPointCloudApp:
             # Clean scene from keyframes
             keyframes_fids = list(range(0, len(self.rgbs), self.keyframes_interval))
             for kf_fid in keyframes_fids:
-                self.scene_widget.scene.remove_geometry(f"{self.PCD_NAME}_{kf_fid}")
+                self.o3d_renderer.scene.remove_geometry(f"{self.PCD_NAME}_{kf_fid}")
             # Re-init keyframe rendering
             self._init_keyframes()
         else:
@@ -650,15 +745,15 @@ class VideoPointCloudApp:
         # Update geometry to reflect change
         if self.render_keyframes:
             # Clean scene
-            self.scene_widget.scene.remove_geometry(self.TRACK_LINES_NAME)
-            self.scene_widget.scene.remove_geometry(self.PCD_NAME)
+            self.o3d_renderer.scene.remove_geometry(self.TRACK_LINES_NAME)
+            self.o3d_renderer.scene.remove_geometry(self.PCD_NAME)
             # Init keyframes
             self._init_keyframes()  # init keyframe rendering
         else:
             # Clean scene from keyframes
             keyframes_fids = list(range(0, len(self.rgbs), self.keyframes_interval))
             for kf_fid in keyframes_fids:
-                self.scene_widget.scene.remove_geometry(f"{self.PCD_NAME}_{kf_fid}")
+                self.o3d_renderer.scene.remove_geometry(f"{self.PCD_NAME}_{kf_fid}")
             # Re-init single frame rendering
             self._init_frame(fid=self.state['fid'])  # re-init single frame rendering
             self._update_geometry(self.state['fid'])
@@ -705,5 +800,164 @@ def run_open3d_viewer(
     K[1, :] *= height
     
     gui.Application.instance.initialize()
-    app = VideoPointCloudApp(rgbs, depths, K, poses_c2w, tracks3d, instances_masks)
+    app = OnlineRendererApp(rgbs, depths, K, poses_c2w, tracks3d, instances_masks)
     gui.Application.instance.run()
+    
+    
+class OffscreenRendererApp(Renderer):
+    def __init__(self, width, height, rgbs, depths, K, poses_c2w, tracks3d=None, instances_masks=None, max_tracks=3000):
+        super().__init__(rgbs, depths, K, poses_c2w, tracks3d, instances_masks, max_tracks)
+        
+        # 
+        self.o3d_renderer = OffscreenRenderer(width, height)
+        
+        # Setup Open3D Renderer
+        self._setup_o3d_renderer()
+        
+        # Add coordinate frame at world origin
+        self._init_coord_frame()
+        
+        # Add grid on XZ plane (ground plane, perpendicular to Y axis)
+        self._init_grid_xz()
+        
+        # Init first frame
+        initial_pcd = self._init_frame(fid=0)
+        
+        # Set Camera View
+        # bounds = initial_pcd.get_axis_aligned_bounding_box()
+        # self.o3d_renderer.setup_camera(60, bounds, bounds.get_center())
+        
+        # Calculate the view matrix (world-to-camera) from the camera-to-world pose
+        # We want a view that encompasses the scene, typically centered on the point cloud.
+        bounds = initial_pcd.get_axis_aligned_bounding_box()
+        self.scene_center = bounds.get_center()
+        
+        # Determine a suitable camera position (eye) and up vector
+        # This example places the viewer camera (eye) slightly above and behind the scene
+        # to get a good overview, looking towards the center.
+        
+        # Estimate the size of the scene to position the camera far enough away
+        scene_size = np.linalg.norm(bounds.get_max_bound() - bounds.get_min_bound())
+        self.camera_distance = scene_size * 0.75
+        
+        # Position the eye (viewer camera) relative to the center
+        # Example: Looking down and slightly in front (positive Z, positive Y)
+        eye = self.scene_center + np.array([self.camera_distance * 0.5, -self.camera_distance * 0.5, -self.camera_distance * 0.8])
+        self.up = np.array([0, 1, 0]) # Standard Up vector for world coordinates
+
+        # Set the camera view using OffscreenRenderer's supported overload 1
+        self.o3d_renderer.setup_camera(
+            60.0,    # vertical_field_of_view (e.g., 60 degrees)
+            self.scene_center,  # The point the camera looks at
+            eye,     # The position of the camera
+            self.up       # The vector defining 'up' for the camera
+        )
+    
+    
+def run_open3d_offline_renderer(
+    rgbs: np.ndarray,
+    depths: np.ndarray,
+    intr_normalized: dict,
+    width: int, height: int,
+    poses_c2w: tuple[np.ndarray, np.ndarray] | np.ndarray,
+    tracks3d: np.ndarray | None = None,
+    instances_masks: np.ndarray | None = None,
+) -> list[np.ndarray]:
+    
+    K = intr_normalized.copy()
+    K[0, :] *= width
+    K[1, :] *= height
+    
+    app = OffscreenRendererApp(512, 512, rgbs, depths, K, poses_c2w, tracks3d, instances_masks)
+    
+    # 
+    app.render_keyframes = False
+    app.render_segmentation = False
+    app.render_tracks = True
+    
+    def render_image():
+        # Render the image
+        image = app.o3d_renderer.render_to_image()
+        # Convert to numpy array
+        image = np.asarray(image)
+        # Flip image vertically
+        image = np.flipud(image)
+        # Flip image horizontally
+        image = np.fliplr(image)
+        # sRGB to linear color space conversion
+        image = utils.srgb_to_linear(image)
+        return image
+    
+    # Init output frames list
+    frames = []
+    
+    nr_frames = rgbs.shape[0]
+    for fid in tqdm(range(nr_frames), desc="Rendering RGB"):
+    
+        # Generate the point cloud for the specified frame index (fid)
+        app._update_geometry(fid)
+
+        # Render the image
+        image = render_image()
+        
+        # concat original rgb to the left of the rendered image
+        original_rgb = rgbs[fid]
+        combined_image = np.concatenate((original_rgb, image), axis=1)
+        
+        frames.append(combined_image)
+        
+        # # Update the camera view
+        # eye = app.scene_center + np.array([app.camera_distance * 0.5, -app.camera_distance * 0.5, -app.camera_distance * 0.8])
+        
+        # app.o3d_renderer.setup_camera(
+        #     60.0,    # vertical_field_of_view (e.g., 60 degrees)
+        #     app.scene_center,  # The point the camera looks at
+        #     eye,     # The position of the camera
+        #     app.up       # The vector defining 'up' for the camera
+        # )
+    
+    if instances_masks is None:
+        return frames
+    
+    # 
+    app.render_keyframes = False
+    app.render_segmentation = True
+    app.render_tracks = False
+    
+    for fid in tqdm(range(nr_frames), desc="Rendering Segmentation"):
+    
+        # Generate the point cloud for the specified frame index (fid)
+        app._update_geometry(fid)
+
+        # Render the image
+        image = app.o3d_renderer.render_to_image()
+        
+        # Convert to numpy array
+        image = np.asarray(image)
+        
+        # Flip image vertically
+        image = np.flipud(image)
+        
+        # Flip image horizontally
+        image = np.fliplr(image)
+        
+        # sRGB to linear color space conversion
+        image = utils.srgb_to_linear(image)
+        
+        # concat segmentation image to the left of the rendered image
+        segmentation_rgb = app.instance_colors[instances_masks[fid].reshape(-1)].reshape(instances_masks[fid].shape[0], instances_masks[fid].shape[1], -1)
+        combined_image = np.concatenate((segmentation_rgb, image), axis=1)
+        
+        frames.append(combined_image)
+        
+        # # Update the camera view
+        # eye = app.scene_center + np.array([app.camera_distance * 0.5, -app.camera_distance * 0.5, -app.camera_distance * 0.8])
+        
+        # app.o3d_renderer.setup_camera(
+        #     60.0,    # vertical_field_of_view (e.g., 60 degrees)
+        #     app.scene_center,  # The point the camera looks at
+        #     eye,     # The position of the camera
+        #     app.up       # The vector defining 'up' for the camera
+        # )
+    
+    return frames

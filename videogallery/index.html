@@ -1,0 +1,173 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Local Video Gallery</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <header>
+        <h1>🎬 My Local Video Gallery</h1>
+    </header>
+
+    <div class="video-grid" id="video-grid">
+        </div>
+
+    <script>
+        
+        // This works without a server because the browser only needs the list
+        // and knows how to access the file path relative to the HTML file.
+        const videoFiles = [
+            // 10
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            // 10
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            // 10
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            // 10
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            // 10
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            // 10
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            // 10
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            // 10
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            // 10
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            // 10
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+            "H5xOyNqJkPs_38738739.mp4",
+        ];
+
+        const grid = document.getElementById('video-grid');
+        const videoFolder = 'videos/'; // The subfolder where your videos are
+        // const videoFolder = "/home/stefano/Codebase/stereo4d-code/videogallery/videos/"; // The subfolder where your videos
+
+        grid.innerHTML = ''; // Clear existing videos
+        
+        videoFiles.forEach(fileName => {
+
+            const videoContainer = document.createElement('div');
+            videoContainer.classList.add('video-item');
+
+            const videoElement = document.createElement('video');
+            videoElement.controls = true; // Show video controls (play, pause, etc.)
+            videoElement.muted = true;    // Mute by default for a smoother grid experience
+            videoElement.autoplay = true; // Play automatically (can be resource intensive)
+            videoElement.loop = true;     // Loop the video
+
+            const sourceElement = document.createElement('source');
+            let videoPath = videoFolder + fileName;
+            console.log("Loading video from path:", videoPath);
+            sourceElement.src = videoPath;
+            sourceElement.type = 'video/mp4'; // Explicitly state the type
+
+            videoElement.appendChild(sourceElement);
+
+            const title = document.createElement('p');
+            title.textContent = fileName;
+            title.classList.add('video-title');
+
+            videoContainer.appendChild(videoElement);
+            videoContainer.appendChild(title);
+            grid.appendChild(videoContainer);
+
+        });
+
+    </script>
+
+</body>
+</html>

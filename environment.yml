@@ -26,4 +26,5 @@ dependencies:
     - einshape
     - dm-haiku
     - tensorflow_datasets
+    - moviepy
 

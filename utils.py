@@ -1,15 +1,79 @@
+import os
 import copy
 import numpy as np
 import math
 import numpy as np
 import einops
+from typing import Literal
 import tqdm
 from typing import List, Optional
 import cv2
 from matplotlib.collections import LineCollection
 import matplotlib
 import matplotlib.pyplot as plt
+from moviepy import ImageSequenceClip
 
+
+def create_video_from_frames(
+    frames: list[np.ndarray], 
+    output_dir: str,
+    output_filename: str, 
+    fps: int = 30,
+    file_format: Literal["mp4", "webm"] = 'mp4' # Default to MP4 for web compatibility
+) -> None:
+    """
+    Saves a list of RGB uint8 NumPy images as a web-compatible video file using MoviePy.
+
+    Args:
+        frames (list[np.ndarray]): A list of image frames, shape (H, W, 3) and dtype uint8 (RGB).
+        output_dir (str): The directory where the output video will be saved.
+        output_filename (str): The desired filename for the output video.
+        fps (int): Frames per second for the output video (default is 30).
+        file_format (str): The desired output format ('mp4' or 'webm'). Defaults to 'mp4'.
+    
+    Raises:
+        ValueError: If the list of frames is empty or an unsupported format is specified.
+    """
+    if not frames:
+        raise ValueError("The list of frames cannot be empty.")
+
+    file_format = file_format.lower()
+    
+    # 1. Configuration based on requested format
+    if file_format == 'mp4':
+        # MoviePy defaults to H.264 (libx264) codec, which is the web standard.
+        codec = 'libx264' 
+        ext = '.mp4'
+    elif file_format == 'webm':
+        # VP9 is excellent for WebM and has better compression than VP8.
+        codec = 'libvpx-vp9' 
+        ext = '.webm'
+    else:
+        raise ValueError(f"Unsupported video format: '{file_format}'. Use 'mp4' or 'webm'.")
+    
+    # Ensure correct file extension
+    if not output_filename.lower().endswith(ext):
+        output_filename += ext
+
+    # Create parent dir if not exists
+    os.makedirs(output_dir, exist_ok=True)
+    save_path = os.path.join(output_dir, output_filename)
+
+    # Create the MoviePy clip from the sequence of NumPy arrays
+    # MoviePy automatically handles RGB input, unlike OpenCV (which expects BGR).
+    clip = ImageSequenceClip(frames, fps=fps)
+
+    # Write the video file
+    try:
+        clip.write_videofile(
+            save_path,
+            codec=codec,
+            fps=fps
+        )
+        print(f"Successfully saved video to '{save_path}' as {file_format} format using {codec}.")
+    except Exception as e:
+        print(f"MoviePy error: {e}")
+        return
 
 def generate_point_cloud(rgb, depth, K, pose_c2w):
     
@@ -29,39 +93,37 @@ def generate_point_cloud(rgb, depth, K, pose_c2w):
     return xyz, rgb, scales
 
 
-# def compute_conegs_scaling(
-#     points_3d_camera: np.ndarray,
-#     points_depth: np.ndarray,
-#     K: np.ndarray,
-# ) -> np.ndarray:
-#     """
-#     points_3d_camera: (N, 3) camera-space 3D points for each pixel
-#     points_depth:   (N,) z-depth for each pixel
-#     K_inv:            (3, 3) inverse intrinsics
-#     returns:
-#         (N, 3) isotropic Gaussian stddev per pixel
-#     """
-#     eps = 1e-6
-#     K_inv = np.linalg.inv(K)
+def srgb_to_linear(srgb_img_u8: np.ndarray) -> np.ndarray:
+    """
+    Converts an sRGB image (numpy array, uint8 in [0, 255]) to a linear 
+    color space image (numpy array, float32 in [0.0, 1.0]).
+    """
+    # 1. Normalize to [0, 1] and convert to float32
+    srgb_normalized = srgb_img_u8.astype(np.float32) / 255.0
+
+    # 2. Apply the sRGB to Linear conversion formula
     
-#     # Unnormalized ray direction for each pixel:
-#     # p_cam = z * d  =>  d = p_cam / z
-#     z = points_3d_camera[:, 2].clip(min=eps)  # (N,)
-#     d = points_3d_camera / z[:, None]  # (N,3)
-#     d_norm = np.linalg.norm(d, axis=1).clip(min=eps)  # (N,)
+    # Define the linear and power functions
+    # For S <= 0.04045, Linear = S / 12.92
+    # For S > 0.04045, Linear = ((S + 0.055) / 1.055)**2.4
+    
+    # Create a mask for the linear part of the function
+    mask = srgb_normalized <= 0.04045
+    
+    # Initialize the linear image array
+    linear_img = np.empty_like(srgb_normalized, dtype=np.float32)
+    
+    # Apply the linear part
+    linear_img[mask] = srgb_normalized[mask] / 12.92
+    
+    # Apply the power part
+    s_pow = srgb_normalized[~mask]
+    linear_img[~mask] = np.power((s_pow + 0.055) / 1.055, 2.4)
+    
+    # Convert back to u8
+    linear_img = (linear_img * 255.0).astype(np.uint8)
 
-#     # Metric distance from camera origin to the 3D point (along the ray)
-#     s = points_depth  # (N,)
-
-#     # Constant pixel footprint (no distortion)
-#     col0 = K_inv[:, 0]
-#     col1 = K_inv[:, 1]
-#     pixel_width = 0.5 * (np.linalg.norm(col0) + np.linalg.norm(col1))
-
-#     pixel_width = pixel_width * (2.0 / math.sqrt(12.0))
-
-#     sigma = pixel_width * (s / d_norm)  # (N,)
-#     return sigma[:, None]
+    return linear_img
 
 
 def sample_depth_from_2d_points(points2d, depth_map):

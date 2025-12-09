@@ -10,9 +10,22 @@ import utils
 import o3d_utils
 from tqdm import tqdm
 from load_data import load_data
+import argparse
 
-def view_data(input_dict):
+
+if __name__ == "__main__":
     
+    parser = argparse.ArgumentParser(description="View data parameters")
+    parser.add_argument('--root_dir', type=str, required=False, default="/home/stefano/Codebase/stereo4d-code/data", help='Root directory of the dataset')
+    parser.add_argument('--split', type=str, required=False, default="test", help='Dataset split (e.g., train, val, test)')
+    parser.add_argument('--scene', type=str, required=False, default="H5xOyNqJkPs", help='Scene identifier')
+    parser.add_argument('--timestamp', type=str, required=False, default="38738739", help='Timestamp identifier')
+    parser.add_argument('--view', action='store_true', help='Whether to view the data using Open3D, else uses offline visualization')
+    parser.add_argument('--output-video-path', type=str, required=False, default="videogallery/videos", help='Output path for the generated video')
+    args = parser.parse_args()
+    
+    input_dict = load_data(args.root_dir, args.split, args.scene, args.timestamp)
+
     rgbs_left = input_dict['left']['video']
     print("rgbs_left shape:", rgbs_left.shape)
     rgbs_right = input_dict['right']['video']
@@ -33,27 +46,30 @@ def view_data(input_dict):
         print("instances_masks shape:", instances_masks.shape)
         
     width, height = rgbs_left.shape[2], rgbs_left.shape[1]
-        
-    o3d_utils.run_open3d_viewer(
-        rgbs_right,
-        depths,
-        intr_normalized,
-        width, height,
-        poses_c2w=(extrs_left, extrs_right),
-        tracks3d=tracks3d,
-        instances_masks=instances_masks
-    )
     
-    return input_dict
+    if args.view:
+        o3d_utils.run_open3d_viewer(
+            rgbs_right,
+            depths,
+            intr_normalized,
+            width, height,
+            poses_c2w=(extrs_left, extrs_right),
+            tracks3d=tracks3d,
+            instances_masks=instances_masks
+        )
+    else:
+        # Offline rendering
+        frames = o3d_utils.run_open3d_offline_renderer(
+            rgbs_right,
+            depths,
+            intr_normalized,
+            width, height,
+            poses_c2w=(extrs_left, extrs_right),
+            tracks3d=tracks3d,
+            instances_masks=instances_masks
+        )
 
-
-
-if __name__ == "__main__":
-    
-    root_dir = "/home/stefano/Codebase/stereo4d-code/data"
-    split = "test"
-    scene = "H5xOyNqJkPs"
-    timestamp = "38738739"
-    
-    input_dict = load_data(root_dir, split, scene, timestamp)
-    view_data(input_dict)
+        # store as mp4 video
+        video_path = args.output_video_path
+        video_name = f"{args.scene}_{args.timestamp}"
+        utils.create_video_from_frames(frames, video_path, video_name, fps=30, file_format='mp4')

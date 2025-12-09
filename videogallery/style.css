@@ -1,0 +1,49 @@
+body {
+    font-family: sans-serif;
+    margin: 0;
+    padding: 0;
+    background-color: #f4f4f9;
+}
+
+header {
+    background-color: #333;
+    color: white;
+    padding: 20px;
+    text-align: center;
+    margin-bottom: 30px;
+}
+
+.video-grid {
+    display: grid;
+    /* This creates a responsive grid: 
+       It will try to fit as many columns as possible (auto-fit)
+       where each column is at least 300px wide (minmax) */
+    grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
+    gap: 20px;
+    padding: 0 20px;
+    margin: 0 auto;
+}
+
+.video-item {
+    background-color: white;
+    border: 1px solid #333;
+    border-radius: 1px;
+    text-align: center;
+}
+
+.video-item video {
+    width: 100%;
+    height: auto;
+    display: block;
+    max-height: 512px;
+    border-radius: 1px;
+    margin-bottom: 10px;
+}
+
+.video-title {
+    font-size: 0.9em;
+    color: #555;
+    white-space: nowrap; /* Prevents text wrap */
+    overflow: hidden;    /* Hides overflowing text */
+    text-overflow: ellipsis; /* Shows "..." for overflow */
+}
