@@ -16,7 +16,7 @@ import argparse
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="View data parameters")
-    parser.add_argument('--root_dir', type=str, required=False, default="/home/stefano/Codebase/stereo4d-code/data", help='Root directory of the dataset')
+    parser.add_argument('--root_dir', type=str, required=False, default="data", help='Root directory of the dataset')
     parser.add_argument('--split', type=str, required=False, default="test", help='Dataset split (e.g., train, val, test)')
     parser.add_argument('--scene', type=str, required=False, default="H5xOyNqJkPs", help='Scene identifier')
     parser.add_argument('--timestamp', type=str, required=False, default="38738739", help='Timestamp identifier')
