@@ -21,8 +21,7 @@ CLASSES = [
 
 def main(root_dir: str, split:str, scene:str, timestamp:str):
 
-    # "video_path" needs to be either a JPEG folder or a MP4 video file
-    video_path = f"{root_dir}/{split}/{scene}_{timestamp}/{scene}_{timestamp}-right_rectified.mp4"
+    video_path = f"{root_dir}/stereo4d-righteye-perspective/{split}_mp4s/{scene}_{timestamp}-right_rectified.mp4"
 
     # Load video frames     
     video_frames_for_vis, nr_frames = utils.load_video_frames(video_path)
@@ -59,18 +58,18 @@ def main(root_dir: str, split:str, scene:str, timestamp:str):
         # finally, we reformat the outputs for visualization and plot the outputs every 60 frames
         outputs_per_frame = prepare_masks_for_visualization(outputs_per_frame)
 
-        vis_frame_stride = 60
-        plt.close("all")
-        for frame_idx in range(0, len(outputs_per_frame), vis_frame_stride):
-            sam_utils.visualize_formatted_frame_output(
-                frame_idx,
-                video_frames_for_vis,
-                outputs_list=[outputs_per_frame],
-                titles=["SAM 3 Dense Tracking outputs"],
-                figsize=(6, 4),
-            )
-            plt.savefig(f"sam3_{cls}_output_frame{frame_idx:04d}.png", dpi=300)
-            plt.close("all")
+        # vis_frame_stride = 60
+        # plt.close("all")
+        # for frame_idx in range(0, len(outputs_per_frame), vis_frame_stride):
+        #     sam_utils.visualize_formatted_frame_output(
+        #         frame_idx,
+        #         video_frames_for_vis,
+        #         outputs_list=[outputs_per_frame],
+        #         titles=["SAM 3 Dense Tracking outputs"],
+        #         figsize=(6, 4),
+        #     )
+        #     plt.savefig(f"sam3_{cls}_output_frame{frame_idx:04d}.png", dpi=300)
+        #     plt.close("all")
         
         # Convert integer keys to strings
         outputs_for_save = {
@@ -103,7 +102,8 @@ def main(root_dir: str, split:str, scene:str, timestamp:str):
         cls_outputs[cls] = outputs_for_save
     
     # Save outputs
-    np.savez("sam3_text_prompt_output.npz", **cls_outputs)
+    sam_path = f"{root_dir}/stereo4d-sam3/{split}/{scene}_{timestamp}-sam3.npz"
+    np.savez(sam_path, **cls_outputs)
     
     # finally, close the inference session to free its GPU resources
     _ = predictor.handle_request(
@@ -119,11 +119,17 @@ def main(root_dir: str, split:str, scene:str, timestamp:str):
 
 
 if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--data-root', default='data', type=str, help='data root directory')
+    parser.add_argument('--split', default='test', type=str, help='data split')
+    parser.add_argument('--scene', default='H5xOyNqJkPs', type=str, help='scene name')
+    parser.add_argument('--timestamp', default='38738739', type=str, help='timestamp')
+    args = parser.parse_args()
     
-    root_dir = "/home/stefano/Codebase/stereo4d-code/data"
-    # 
-    split = "test"
-    scene = "H5xOyNqJkPs"
-    timestamp = "38738739"
+    root_dir = args.data_root
+    split = args.split
+    scene = args.scene
+    timestamp = args.timestamp
     
     main(root_dir, split, scene, timestamp)
