@@ -197,3 +197,6 @@ if __name__ == "__main__":
     # save figure
     plt.savefig("rendered_vs_gt.png")
     
+    # TODO Stefano: depth loss
+    # try L2 between rendered inverse depth and the ground truth inverse depth
+    # weighted by depth estimation uncertainty

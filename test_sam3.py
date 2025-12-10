@@ -22,7 +22,7 @@ CLASSES = [
 def main(root_dir: str, split:str, scene:str, timestamp:str):
 
     # "video_path" needs to be either a JPEG folder or a MP4 video file
-    video_path = f"{root_dir}/{split}/{scene}_{timestamp}/{scene}_{timestamp}-right_rectified.mp4"
+    video_path = f"{root_dir}/stereo4d-righteye-perspective/{split}/{scene}_{timestamp}-right_rectified.mp4"
 
     # Load video frames     
     video_frames_for_vis, nr_frames = utils.load_video_frames(video_path)
