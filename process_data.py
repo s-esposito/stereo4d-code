@@ -11,30 +11,27 @@
 #   --dry_run: If set, create scripts but don't submit jobs.
 #####################################################################
 
+import math
 import os
 import argparse
 import utils
-import subprocess
+# import subprocess
 from datetime import datetime
 
 
-def create_slurm_array_script(files_to_process, split, source_dir, destination_dir, 
-                               foundation_stereo_root, script_dir, max_concurrent_jobs, 
-                               actual_split=None):
+def create_segmentation_slurm_script(files_to_process, split, source_dir, destination_dir, 
+                               script_dir, max_concurrent_jobs, num_files_per_job):
     """Create a SLURM job array script for processing multiple files efficiently.
     
     Args:
-        actual_split: The actual data split (train/test) for file paths. 
-                     If None, uses 'split' (which may include batch suffix).
+        files_to_process: List of files to process
+        num_files_per_job: Number of files each array job should process
     """
     
     # Replace <CONDA_ROOT> with your actual conda installation path
     CONDA_ROOT = "/home/geiger/gwb987/.conda"
-    CONDA_ENV_NAME = 'foundation_stereo'
+    CONDA_ENV_NAME = 'sam3'
     PYTHON_EXEC = os.path.join(CONDA_ROOT, 'envs', CONDA_ENV_NAME, 'bin', 'python')
-    
-    # Use actual_split for file paths if provided (handles batched submissions)
-    data_split = actual_split if actual_split else split
     
     # Create a file list for the job array
     file_list_path = os.path.join(script_dir, f"{split}_files_to_process.txt")
@@ -42,18 +39,30 @@ def create_slurm_array_script(files_to_process, split, source_dir, destination_d
         for filename in files_to_process:
             f.write(f"{filename}\n")
     
-    num_jobs = len(files_to_process)
-    print("Number of jobs in array:", num_jobs)
+    num_total_files = len(files_to_process)
+    # Calculate number of array tasks needed
+    num_array_tasks = math.ceil(num_total_files / num_files_per_job)
+    
+    print(f"Total files: {num_total_files}")
+    print(f"Files per job: {num_files_per_job}")
+    print(f"Number of array tasks: {num_array_tasks}")
+    
+    base_duration = 5  # minutes per file
+    estimated_duration = base_duration * num_files_per_job
+    # convert to hh:mm:ss format
+    hours = estimated_duration // 60
+    minutes = estimated_duration % 60
+    time_limit = f"{hours:02}:{minutes:02}:00"
     
     # Create SLURM job array script with throttling
     # Format: --array=0-N%max_concurrent means run jobs 0 to N with max_concurrent running at once
     slurm_script = f"""#!/bin/bash
-#SBATCH --job-name="dataproc_{split}"
+#SBATCH --job-name="segmentation_{split}"
 #SBATCH --partition="geiger"
 #SBATCH --ntasks=1
 #SBATCH --gres=gpu:1
-#SBATCH --time=00:05:00
-#SBATCH --array=0-{num_jobs-1}%{max_concurrent_jobs}
+#SBATCH --time={time_limit}
+#SBATCH --array=0-{num_array_tasks-1}%{max_concurrent_jobs}
 #SBATCH --output={script_dir}/logs/dataprocessing_{split}_%A_%a.out
 #SBATCH --error={script_dir}/logs/dataprocessing_{split}_%A_%a.err
 #SBATCH --mail-type=END,FAIL,ARRAY_TASKS
@@ -65,132 +74,72 @@ echo "Array Task ID: $SLURM_ARRAY_TASK_ID"
 echo "Running on node: $(hostname)"
 echo "Start time: $(date)"
 
-# Get the filename for this array task
-LINE_NUMBER=$((${{SLURM_ARRAY_TASK_ID}} + 1))
-FILENAME=$(awk "NR==${{LINE_NUMBER}}" {file_list_path})
+# Calculate the range of files this array task should process
+FILES_PER_JOB={num_files_per_job}
+START_IDX=$((SLURM_ARRAY_TASK_ID * FILES_PER_JOB + 1))
+END_IDX=$(((SLURM_ARRAY_TASK_ID + 1) * FILES_PER_JOB))
+TOTAL_FILES={num_total_files}
 
-# Remove .npz extension if present
-FILENAME_CLEAN=${{FILENAME%.npz}}
-
-# Split filename into scene and timestamp
-SCENE=$(echo "$FILENAME_CLEAN" | rev | cut -d'_' -f2- | rev)
-TIMESTAMP=$(echo "$FILENAME_CLEAN" | rev | cut -d'_' -f1 | rev)
-
-echo "Processing file: $FILENAME"
-echo "Scene: $SCENE, Timestamp: $TIMESTAMP"
-
-# Check if output already exists (for robustness in case of reruns)
-OUTPUT_FILE="{destination_dir}/stereo4d-disps/{data_split}/${{FILENAME_CLEAN}}-disps.npz"
-if [ -f "$OUTPUT_FILE" ]; then
-    echo "Output file already exists: $OUTPUT_FILE"
-    echo "Skipping processing."
-    exit 0
+# Don't exceed the total number of files
+if [ $END_IDX -gt $TOTAL_FILES ]; then
+    END_IDX=$TOTAL_FILES
 fi
 
-# Run the disparity processing
-{PYTHON_EXEC} {foundation_stereo_root}/scripts/run_video.py \\
-    --scene="$SCENE" \\
-    --timestamp="$TIMESTAMP" \\
-    --left_file={source_dir}/stereo4d-lefteye-perspective/{data_split}_mp4s/${{FILENAME_CLEAN}}-left_rectified.mp4 \\
-    --right_file={source_dir}/stereo4d-righteye-perspective/{data_split}_mp4s/${{FILENAME_CLEAN}}-right_rectified.mp4 \\
-    --ckpt_dir={foundation_stereo_root}/pretrained_models/23-51-11/model_best_bp2.pth \\
-    --out_dir={destination_dir}/stereo4d-disps/{data_split}
+echo "Processing files from line $START_IDX to $END_IDX"
 
-# Check exit status
-if [ $? -eq 0 ]; then
-    echo "Successfully processed: $FILENAME"
-else
-    echo "Error processing: $FILENAME"
-    exit 1
-fi
+# Process each file assigned to this array task
+for LINE_NUMBER in $(seq $START_IDX $END_IDX); do
+    FILENAME=$(awk "NR==$LINE_NUMBER" {file_list_path})
+    
+    # Skip if filename is empty (shouldn't happen, but be safe)
+    if [ -z "$FILENAME" ]; then
+        echo "Warning: Empty filename at line $LINE_NUMBER"
+        continue
+    fi
+    
+    # Remove .npz extension if present
+    FILENAME_CLEAN=${{FILENAME%.npz}}
+    
+    # Split filename into scene and timestamp
+    SCENE=$(echo "$FILENAME_CLEAN" | rev | cut -d'_' -f2- | rev)
+    TIMESTAMP=$(echo "$FILENAME_CLEAN" | rev | cut -d'_' -f1 | rev)
+    
+    echo ""
+    echo "----------------------------------------"
+    echo "Processing file $((LINE_NUMBER - START_IDX + 1))/$((END_IDX - START_IDX + 1)): $FILENAME"
+    echo "Scene: $SCENE, Timestamp: $TIMESTAMP"
+    
+    # Check if output already exists (for robustness in case of reruns)
+    OUTPUT_FILE="{destination_dir}/stereo4d-disps/{split}/${{FILENAME_CLEAN}}-disps.npz"
+    if [ -f "$OUTPUT_FILE" ]; then
+        echo "Output file already exists: $OUTPUT_FILE"
+        echo "Skipping processing."
+    else
+        # Run the disparity processing
+        {PYTHON_EXEC} run_sam3.py \\
+            --data-root="{source_dir}" \\
+            --split={split} \\
+            --scene="$SCENE" \\
+            --timestamp="$TIMESTAMP"
+            
+        # Check exit status
+        if [ $? -eq 0 ]; then
+            echo "Successfully processed: $FILENAME"
+        else
+            echo "Error processing: $FILENAME"
+            exit 1
+        fi
+    fi
+done
+"""
 
+    slurm_script += """
+
+echo ""
+echo "----------------------------------------"
+echo "All files processed for this array task"
 echo "End time: $(date)"
 """
-    
-    return slurm_script, file_list_path
-
-
-def submit_slurm_array_job(files_to_process, split, source_dir, destination_dir, 
-                           foundation_stereo_root, max_concurrent_jobs, dry_run=False, 
-                           max_array_size=300):
-    """Submit a SLURM job array for processing multiple files.
-    
-    Args:
-        max_array_size: Maximum number of array tasks allowed (default 300 for typical SLURM limits)
-    """
-    
-    if not files_to_process:
-        print(f"No files to process for split: {split}")
-        return None
-    
-    num_files = len(files_to_process)
-    
-    # Check if we exceed SLURM array size limits
-    if num_files > max_array_size:
-        print(f"\n{'='*80}")
-        print(f"⚠️  WARNING: Too many files ({num_files}) for a single job array")
-        print(f"{'='*80}")
-        print(f"SLURM typically limits job arrays to {max_array_size} tasks.")
-        print(f"You have {num_files} files to process.")
-        print(f"\nOptions to proceed:")
-        print(f"  1. Process in batches (recommended)")
-        print(f"  2. Process already-completed files won't be reprocessed")
-        print(f"\nThis script will create multiple job arrays in batches of {max_array_size}.")
-        print(f"{'='*80}\n")
-        
-        # Split into batches
-        job_ids = []
-        for batch_num, i in enumerate(range(0, num_files, max_array_size), 1):
-            batch_files = files_to_process[i:i+max_array_size]
-            print(f"Processing batch {batch_num}/{(num_files + max_array_size - 1) // max_array_size}")
-            print(f"  Files in this batch: {len(batch_files)}")
-            
-            job_id = _submit_single_array(
-                batch_files, f"{split}_batch{batch_num}", source_dir, destination_dir,
-                foundation_stereo_root, max_concurrent_jobs, dry_run, actual_split=split
-            )
-            if job_id:
-                job_ids.append(job_id)
-        
-        return job_ids if job_ids else None
-    
-    # Single array submission
-    return _submit_single_array(
-        files_to_process, split, source_dir, destination_dir,
-        foundation_stereo_root, max_concurrent_jobs, dry_run
-    )
-
-
-def _submit_single_array(files_to_process, split, source_dir, destination_dir,
-                         foundation_stereo_root, max_concurrent_jobs, dry_run, actual_split=None):
-    """Internal function to submit a single SLURM job array.
-    
-    Args:
-        actual_split: The actual data split (train/test) for file paths. 
-                     Needed when split includes batch suffix (e.g., 'test_batch1').
-    """
-    
-    if not files_to_process:
-        return None
-    
-    # Create script directory with timestamp
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    script_dir = os.path.join(os.getcwd(), "slurm_jobs", f"{split}_{timestamp}")
-    logs_dir = os.path.join(script_dir, "logs")
-    os.makedirs(logs_dir, exist_ok=True)
-    
-    print(f"\n{'='*80}")
-    print(f"Preparing SLURM job array for {split} split")
-    print(f"Number of files to process: {len(files_to_process)}")
-    print(f"Max concurrent jobs: {max_concurrent_jobs}")
-    print(f"Script directory: {script_dir}")
-    print(f"{'='*80}\n")
-    
-    # Create SLURM script
-    slurm_script, file_list_path = create_slurm_array_script(
-        files_to_process, split, source_dir, destination_dir,
-        foundation_stereo_root, script_dir, max_concurrent_jobs, actual_split
-    )
     
     # Write SLURM script to file
     script_path = os.path.join(script_dir, f"process_{split}.sh")
@@ -203,63 +152,262 @@ def _submit_single_array(files_to_process, split, source_dir, destination_dir,
     print(f"Created SLURM script: {script_path}")
     print(f"Created file list: {file_list_path}")
     
-    if dry_run:
-        print("\n[DRY RUN] Would submit the following command:")
-        print(f"  sbatch {script_path}")
-        print("\nYou can manually submit the job later with:")
-        print(f"  sbatch {script_path}")
-        return script_path
+    return script_path, file_list_path
+
+
+def create_disparities_slurm_script(files_to_process, split, source_dir, destination_dir, 
+                               foundation_stereo_root, script_dir, max_concurrent_jobs, num_files_per_job):
+    """Create a SLURM job array script for processing multiple files efficiently.
     
-    # Submit the job array
-    command = ['sbatch', script_path]
-    print(f"\nSubmitting job array: {' '.join(command)}")
+    Args:
+        files_to_process: List of files to process
+        num_files_per_job: Number of files each array job should process
+    """
     
-    result = subprocess.run(command, capture_output=True, encoding='utf-8')
+    # Replace <CONDA_ROOT> with your actual conda installation path
+    CONDA_ROOT = "/home/geiger/gwb987/.conda"
+    CONDA_ENV_NAME = 'foundation_stereo'
+    PYTHON_EXEC = os.path.join(CONDA_ROOT, 'envs', CONDA_ENV_NAME, 'bin', 'python')
     
-    if result.returncode != 0:
-        print(f"\n{'='*80}")
-        print("ERROR: Failed to submit SLURM job array")
-        print(f"{'='*80}")
-        print(f"Exit code: {result.returncode}")
-        print(f"Error message:\n{result.stderr}")
-        
-        # Provide helpful suggestions based on error type
-        if "QOSMaxSubmitJobPerUserLimit" in result.stderr or "job submit limit" in result.stderr:
-            print(f"\n⚠️  You've hit the SLURM job submission limit!")
-            print("\nPossible solutions:")
-            print("  1. Check your current job queue: squeue -u $USER")
-            print("  2. Wait for existing jobs to complete or cancel them: scancel -u $USER")
-            print("  3. Reduce concurrent jobs: --max_concurrent_jobs 10")
-            print(f"  4. The script has been saved and can be submitted later:")
-            print(f"     sbatch {script_path}")
-            print("\nThe job array is ready but not submitted. You can submit it manually when ready.")
-            return None
-        elif "No partition specified" in result.stderr or "Invalid partition" in result.stderr:
-            print(f"\n⚠️  Partition issue detected!")
-            print("\nPossible solutions:")
-            print("  1. Check available partitions: sinfo")
-            print("  2. Verify 'a100-galvani' is correct for your cluster")
-            print("  3. Edit the script if needed and submit manually:")
-            print(f"     sbatch {script_path}")
-            return None
-        else:
-            print(f"\n⚠️  Script created but submission failed.")
-            print(f"You can try submitting manually:")
-            print(f"  sbatch {script_path}")
-            return None
+    # Create a file list for the job array
+    file_list_path = os.path.join(script_dir, f"{split}_files_to_process.txt")
+    with open(file_list_path, 'w') as f:
+        for filename in files_to_process:
+            f.write(f"{filename}\n")
     
-    # Extract job ID from sbatch output
-    if "Submitted batch job" in result.stdout:
-        job_id = result.stdout.strip().split()[-1]
-        print("\n✓ Job array submitted successfully!")
-        print(f"  Job ID: {job_id}")
-        print(f"  Monitor with: squeue -j {job_id}")
-        print(f"  Cancel with: scancel {job_id}")
-        print(f"  View logs in: {logs_dir}/")
-        return job_id
-    else:
-        print(f"Warning: Unexpected sbatch output: {result.stdout}")
+    num_total_files = len(files_to_process)
+    # Calculate number of array tasks needed
+    num_array_tasks = math.ceil(num_total_files / num_files_per_job)
+    
+    print(f"Total files: {num_total_files}")
+    print(f"Files per job: {num_files_per_job}")
+    print(f"Number of array tasks: {num_array_tasks}")
+    
+    base_duration = 5  # minutes per file
+    estimated_duration = base_duration * num_files_per_job
+    # convert to hh:mm:ss format
+    hours = estimated_duration // 60
+    minutes = estimated_duration % 60
+    time_limit = f"{hours:02}:{minutes:02}:00"
+    
+    # Create SLURM job array script with throttling
+    # Format: --array=0-N%max_concurrent means run jobs 0 to N with max_concurrent running at once
+    slurm_script = f"""#!/bin/bash
+#SBATCH --job-name="disparity_{split}"
+#SBATCH --partition="geiger"
+#SBATCH --ntasks=1
+#SBATCH --gres=gpu:1
+#SBATCH --time={time_limit}
+#SBATCH --array=0-{num_array_tasks-1}%{max_concurrent_jobs}
+#SBATCH --output={script_dir}/logs/dataprocessing_{split}_%A_%a.out
+#SBATCH --error={script_dir}/logs/dataprocessing_{split}_%A_%a.err
+#SBATCH --mail-type=END,FAIL,ARRAY_TASKS
+#SBATCH --mail-user=stefano.esposito97@outlook.com
+
+# Print job info
+echo "Job ID: $SLURM_JOB_ID"
+echo "Array Task ID: $SLURM_ARRAY_TASK_ID"
+echo "Running on node: $(hostname)"
+echo "Start time: $(date)"
+
+# Calculate the range of files this array task should process
+FILES_PER_JOB={num_files_per_job}
+START_IDX=$((SLURM_ARRAY_TASK_ID * FILES_PER_JOB + 1))
+END_IDX=$(((SLURM_ARRAY_TASK_ID + 1) * FILES_PER_JOB))
+TOTAL_FILES={num_total_files}
+
+# Don't exceed the total number of files
+if [ $END_IDX -gt $TOTAL_FILES ]; then
+    END_IDX=$TOTAL_FILES
+fi
+
+echo "Processing files from line $START_IDX to $END_IDX"
+
+# Process each file assigned to this array task
+for LINE_NUMBER in $(seq $START_IDX $END_IDX); do
+    FILENAME=$(awk "NR==$LINE_NUMBER" {file_list_path})
+    
+    # Skip if filename is empty (shouldn't happen, but be safe)
+    if [ -z "$FILENAME" ]; then
+        echo "Warning: Empty filename at line $LINE_NUMBER"
+        continue
+    fi
+    
+    # Remove .npz extension if present
+    FILENAME_CLEAN=${{FILENAME%.npz}}
+    
+    # Split filename into scene and timestamp
+    SCENE=$(echo "$FILENAME_CLEAN" | rev | cut -d'_' -f2- | rev)
+    TIMESTAMP=$(echo "$FILENAME_CLEAN" | rev | cut -d'_' -f1 | rev)
+    
+    echo ""
+    echo "----------------------------------------"
+    echo "Processing file $((LINE_NUMBER - START_IDX + 1))/$((END_IDX - START_IDX + 1)): $FILENAME"
+    echo "Scene: $SCENE, Timestamp: $TIMESTAMP"
+    
+    # Check if output already exists (for robustness in case of reruns)
+    OUTPUT_FILE="{destination_dir}/stereo4d-disps/{split}/${{FILENAME_CLEAN}}-disps.npz"
+    if [ -f "$OUTPUT_FILE" ]; then
+        echo "Output file already exists: $OUTPUT_FILE"
+        echo "Skipping processing."
+    else
+        # Run the disparity processing
+        {PYTHON_EXEC} {foundation_stereo_root}/scripts/run_video.py \\
+            --scene="$SCENE" \\
+            --timestamp="$TIMESTAMP" \\
+            --left_file={source_dir}/stereo4d-lefteye-perspective/{split}_mp4s/${{FILENAME_CLEAN}}-left_rectified.mp4 \\
+            --right_file={source_dir}/stereo4d-righteye-perspective/{split}_mp4s/${{FILENAME_CLEAN}}-right_rectified.mp4 \\
+            --ckpt_dir={foundation_stereo_root}/pretrained_models/23-51-11/model_best_bp2.pth \\
+            --out_dir={destination_dir}/stereo4d-disps/{split}
+            
+        # Check exit status
+        if [ $? -eq 0 ]; then
+            echo "Successfully processed: $FILENAME"
+        else
+            echo "Error processing: $FILENAME"
+            exit 1
+        fi
+    fi
+done
+"""
+
+    slurm_script += """
+
+echo ""
+echo "----------------------------------------"
+echo "All files processed for this array task"
+echo "End time: $(date)"
+"""
+    
+    # Write SLURM script to file
+    script_path = os.path.join(script_dir, f"process_{split}.sh")
+    with open(script_path, 'w') as f:
+        f.write(slurm_script)
+    
+    # Make script executable
+    os.chmod(script_path, 0o755)
+    
+    print(f"Created SLURM script: {script_path}")
+    print(f"Created file list: {file_list_path}")
+    
+    return script_path, file_list_path
+
+
+def create_segmentation_slurm(files_to_process, split, source_dir, destination_dir, 
+                           max_concurrent_jobs, max_array_size):
+    if not files_to_process:
+        print(f"No files to process for split: {split}")
         return None
+    
+    num_files = len(files_to_process)
+    print(f"Setting up SLURM job array for {split} split")
+    print(f"Total number of files to process: {num_files}")
+    print(f"Max array size allowed: {max_array_size}")
+    
+    # Calculate how many files each job should process
+    # This ensures we don't exceed the max_array_size limit
+    num_files_per_job = math.ceil(num_files / max_array_size)
+    num_array_tasks = math.ceil(num_files / num_files_per_job)
+    
+    print(f"Files per job: {num_files_per_job}")
+    print(f"Number of array tasks: {num_array_tasks}")
+    print(f"Max concurrent jobs: {max_concurrent_jobs}")
+    
+    # Check if we need batching
+    if num_array_tasks > max_array_size:
+        print(f"\n⚠️  WARNING: Calculated array tasks ({num_array_tasks}) exceeds max_array_size ({max_array_size})")
+        print("This should not happen. Adjusting files_per_job...")
+        num_files_per_job = math.ceil(num_files / max_array_size)
+        num_array_tasks = math.ceil(num_files / num_files_per_job)
+        print(f"Adjusted - Files per job: {num_files_per_job}, Array tasks: {num_array_tasks}")
+        
+    # Create script directory with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    script_dir = os.path.join(os.getcwd(), "slurm_jobs", f"segmentation_{split}_{timestamp}")
+    logs_dir = os.path.join(script_dir, "logs")
+    os.makedirs(logs_dir, exist_ok=True)
+    
+    print(f"Script directory: {script_dir}")
+    
+    # Create SLURM script
+    script_path, file_list_path = create_segmentation_slurm_script(
+        files_to_process, split, source_dir, destination_dir,
+        script_dir, max_concurrent_jobs, num_files_per_job,
+    )
+    
+    print(f"\n{'='*60}")
+    print("✓ SLURM job array script created successfully!")
+    print(f"{'='*60}")
+    print("\nTo submit the job, run:")
+    print(f"  sbatch {script_path}")
+    print("\nTo monitor the job:")
+    print("  squeue -u $USER")
+    print("\nLog files will be in:")
+    print(f"  {logs_dir}/")
+    
+    return script_path
+
+
+def create_disparities_slurm(files_to_process, split, source_dir, destination_dir, 
+                           foundation_stereo_root, max_concurrent_jobs, 
+                           max_array_size):
+    """Create a SLURM job array for processing multiple files.
+    
+    Args:
+        max_array_size: Maximum number of array tasks allowed (default 40 for SLURM limits)
+    """
+    
+    if not files_to_process:
+        print(f"No files to process for split: {split}")
+        return None
+    
+    num_files = len(files_to_process)
+    print(f"Setting up SLURM job array for {split} split")
+    print(f"Total number of files to process: {num_files}")
+    print(f"Max array size allowed: {max_array_size}")
+    
+    # Calculate how many files each job should process
+    # This ensures we don't exceed the max_array_size limit
+    num_files_per_job = math.ceil(num_files / max_array_size)
+    num_array_tasks = math.ceil(num_files / num_files_per_job)
+    
+    print(f"Files per job: {num_files_per_job}")
+    print(f"Number of array tasks: {num_array_tasks}")
+    print(f"Max concurrent jobs: {max_concurrent_jobs}")
+    
+    # Check if we need batching
+    if num_array_tasks > max_array_size:
+        print(f"\n⚠️  WARNING: Calculated array tasks ({num_array_tasks}) exceeds max_array_size ({max_array_size})")
+        print("This should not happen. Adjusting files_per_job...")
+        num_files_per_job = math.ceil(num_files / max_array_size)
+        num_array_tasks = math.ceil(num_files / num_files_per_job)
+        print(f"Adjusted - Files per job: {num_files_per_job}, Array tasks: {num_array_tasks}")
+    
+    # Create script directory with timestamp
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    script_dir = os.path.join(os.getcwd(), "slurm_jobs", f"disparity_{split}_{timestamp}")
+    logs_dir = os.path.join(script_dir, "logs")
+    os.makedirs(logs_dir, exist_ok=True)
+    
+    print(f"Script directory: {script_dir}")
+    
+    # Create SLURM script
+    script_path, file_list_path = create_disparities_slurm_script(
+        files_to_process, split, source_dir, destination_dir,
+        foundation_stereo_root, script_dir, max_concurrent_jobs, num_files_per_job,
+    )
+    
+    print(f"\n{'='*60}")
+    print("✓ SLURM job array script created successfully!")
+    print(f"{'='*60}")
+    print("\nTo submit the job, run:")
+    print(f"  sbatch {script_path}")
+    print("\nTo monitor the job:")
+    print("  squeue -u $USER")
+    print("\nLog files will be in:")
+    print(f"  {logs_dir}/")
+    
+    return script_path
 
 
 if __name__ == "__main__":
@@ -272,7 +420,7 @@ if __name__ == "__main__":
     parser.add_argument("--foundation-stereo-root", type=str, default="/home/geiger/gwb987/work/codebase/FoundationStereo", help="Directory for foundation stereo data.")
     parser.add_argument("--max-concurrent-jobs", type=int, default=10, help="Maximum number of jobs to run concurrently (default: 10).")
     parser.add_argument("--max-array-size", type=int, default=40, help="Maximum job array size to avoid SLURM limits (default: 40).")
-    parser.add_argument("--dry-run", action="store_true", help="If set, create scripts but don't submit jobs.")
+    # parser.add_argument("--dry-run", action="store_true", help="If set, create scripts but don't submit jobs.")
     args = parser.parse_args()
     
     DESTINATION_DIR = args.destination_dir
@@ -288,7 +436,7 @@ if __name__ == "__main__":
     else:
         splits = [args.split]
 
-    job_ids = []
+    # job_ids = []
     
     for split in splits:
         
@@ -311,6 +459,8 @@ if __name__ == "__main__":
             files = utils.get_unique_scenes(files)
             print(f"Number of unique scene files in {split} split: {len(files)}")
 
+        # DISPARITY PROCESSING
+
         # Filter out already processed files
         files_to_process = []
         for filename in files:
@@ -328,47 +478,53 @@ if __name__ == "__main__":
         print(f"Number of files to process: {len(files_to_process)}")
         
         if not files_to_process:
-            print(f"All files in {split} split are already processed. Skipping.")
+            print(f"All files in {split} split are already disparity processed. Skipping.")
             continue
         
         # Submit SLURM job array (may return single job ID or list of IDs for batched submission)
-        result = submit_slurm_array_job(
+        create_disparities_slurm(
             files_to_process=files_to_process,
             split=split,
             source_dir=SOURCE_DIR,
             destination_dir=DESTINATION_DIR,
             foundation_stereo_root=args.foundation_stereo_root,
             max_concurrent_jobs=args.max_concurrent_jobs,
-            dry_run=args.dry_run,
+            max_array_size=args.max_array_size
+        )
+    
+        # SEGMENTATION PROCESSING
+        
+        # Filter out already processed files
+        files_to_process = []
+        for filename in files:
+            # check if file has been processed (is in destination directory)
+            file_path = f"{DESTINATION_DIR}/stereo4d-sam3/{split}/{filename}"
+            # remove .npz extension for checking
+            if file_path.endswith(".npz"):
+                file_path = file_path[:-4]
+            file_path += "-sam3.npz"
+            
+            if not os.path.exists(file_path):
+                files_to_process.append(filename)
+        
+        print(f"Number of files already processed: {len(files) - len(files_to_process)}")
+        print(f"Number of files to process: {len(files_to_process)}")
+        
+        if not files_to_process:
+            print(f"All files in {split} split are already SAM3 processed. Skipping.")
+            continue
+        
+        # Submit SLURM job array (may return single job ID or list of IDs for batched submission)
+        create_segmentation_slurm(
+            files_to_process=files_to_process,
+            split=split,
+            source_dir=SOURCE_DIR,
+            destination_dir=DESTINATION_DIR,
+            max_concurrent_jobs=args.max_concurrent_jobs,
             max_array_size=args.max_array_size
         )
         
-        if result:
-            # Handle both single job ID and list of job IDs (for batched submissions)
-            if isinstance(result, list):
-                for idx, jid in enumerate(result, 1):
-                    job_ids.append((f"{split}_batch{idx}", jid))
-            else:
-                job_ids.append((split, result))
-        else:
-            print(f"\n⚠️  Job for {split} split was not submitted (see error above).")
-    
-    # Print summary
-    if job_ids:
-        print(f"\n{'='*80}")
-        print("SUBMISSION SUMMARY")
-        print(f"{'='*80}")
-        for split_name, job_id in job_ids:
-            print(f"  {split_name}: Job ID {job_id}")
-        print("\nMonitor all jobs: squeue -u $USER")
-        print("Cancel all jobs: scancel -u $USER")
-        print(f"{'='*80}\n")
-    elif args.dry_run:
-        print("\n[DRY RUN COMPLETE] Scripts created but not submitted.")
-    else:
-        print("\n⚠️  No jobs were submitted.")
-        print("Check the errors above or verify all files are already processed.")
-
-    # TODO Stefano: process segmentations
-    
+        
     # TODO Stefano: process 2D tracks
+    
+    print("\nScripts created but not submitted.")
