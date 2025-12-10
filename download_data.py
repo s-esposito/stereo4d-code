@@ -83,7 +83,7 @@ def download_gcs_file(bucket_name, split, filename, destination_dir="."):
     prefix = split if split.endswith('/') else split + '/'
     
     full_blob_name = f"{prefix}{filename}"
-    local_destination = f"{destination_dir}/{full_blob_name}"
+    local_destination = f"{destination_dir}/stereo4d-npz/{full_blob_name}"
     # Use a temporary file name to ensure atomicity
     temp_destination = f"{local_destination}.tmp"
     
@@ -124,7 +124,7 @@ def download_gcs_file(bucket_name, split, filename, destination_dir="."):
 if __name__ == "__main__":
     
     parser = argparse.ArgumentParser(description="Download data from Google Cloud Storage.")
-    parser.add_argument("--destination_dir", type=str, default="stereo4d-npz", help="Directory to save downloaded files.")
+    parser.add_argument("--destination_dir", type=str, default="data", help="Directory to save downloaded files.")
     parser.add_argument("--split", type=str, choices=["train", "test", "both"], default="both", help="Data split to download.")
     parser.add_argument("--unique_scenes", action="store_true", help="If set, only download unique scenes based on identifier (first timestamp).")
     args = parser.parse_args()
@@ -144,7 +144,7 @@ if __name__ == "__main__":
     for split in splits:
         
         # clean tmp files in destination directory
-        for root, dirs, files in os.walk(f"{DESTINATION_DIR}/{split}"):
+        for root, dirs, files in os.walk(f"{DESTINATION_DIR}/stereo4d-npz/{split}"):
             for file in files:
                 if file.endswith(".tmp"):
                     temp_file_path = os.path.join(root, file)
@@ -188,7 +188,7 @@ if __name__ == "__main__":
         for i, filename in tqdm(enumerate(files), total=len(files)):
 
             # check if file has been downloaded (is in destination directory)
-            file_path = f"{DESTINATION_DIR}/{split}/{filename}"
+            file_path = f"{DESTINATION_DIR}/stereo4d-npz/{split}/{filename}"
 
             if os.path.exists(f"{file_path}"):
                 # print(f"File {filename} already exists in {file_path}. Skipping download.")

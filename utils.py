@@ -293,6 +293,7 @@ def depth2xyz(depth, K):
 
 def get_unique_scenes(file_list):
     
+    file_list.sort()
     # filter files to only include unique scenes based on identifier
     unique_identifiers = set()
     unique_files_list = []

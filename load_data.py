@@ -33,8 +33,8 @@ def load_data(root_dir: str, split:str, scene:str, timestamp:str):
     # load test data from npz
     flow_path = f"{root_dir}/stereo4d-flows-stereo/{split}/{scene}_{timestamp}-flows_stereo.pkl"
     meta_path = f"{root_dir}/stereo4d-npz/{split}/{scene}_{timestamp}.npz"
-    left_video_path = f"{root_dir}/stereo4d-lefteye-perspective/{split}/{scene}_{timestamp}-left_rectified.mp4"
-    right_video_path = f"{root_dir}/stereo4d-righteye-perspective/{split}/{scene}_{timestamp}-right_rectified.mp4"
+    left_video_path = f"{root_dir}/stereo4d-lefteye-perspective/{split}_mp4s/{scene}_{timestamp}-left_rectified.mp4"
+    right_video_path = f"{root_dir}/stereo4d-righteye-perspective/{split}_mp4s/{scene}_{timestamp}-right_rectified.mp4"
     disp_path = f"{root_dir}/stereo4d-disps/{split}/{scene}_{timestamp}-disps.npz"
     sam_path = f"{root_dir}/stereo4d-sam3/{split}/{scene}_{timestamp}-sam3.npz"
         

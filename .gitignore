@@ -8,3 +8,4 @@ train/*
 stereo4d-npz/*
 data/*
 tracks2d/*
+slurm_jobs/*
