@@ -13,6 +13,233 @@ header {
     margin-bottom: 30px;
 }
 
+header h1 {
+    margin: 0 0 15px 0;
+}
+
+.filter-controls {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 15px;
+    margin-top: 15px;
+    flex-wrap: wrap;
+}
+
+.filter-group {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.filter-separator {
+    color: #888;
+    font-size: 1.2em;
+    opacity: 0.5;
+}
+
+.filter-controls label {
+    font-size: 0.95em;
+    font-weight: 500;
+}
+
+.filter-controls select {
+    padding: 8px 12px;
+    font-size: 0.95em;
+    border: 1px solid #555;
+    border-radius: 4px;
+    background-color: #444;
+    color: white;
+    cursor: pointer;
+    transition: background-color 0.2s;
+}
+
+.filter-controls select:hover {
+    background-color: #555;
+}
+
+.filter-controls select:focus {
+    outline: 2px solid #007BFF;
+    outline-offset: 2px;
+}
+
+.video-count {
+    font-size: 0.9em;
+    color: #ccc;
+    font-style: italic;
+}
+
+/* Dropdown container */
+.dropdown-container {
+    position: relative;
+    display: inline-block;
+}
+
+.dropdown-button {
+    padding: 8px 12px;
+    font-size: 0.95em;
+    border: 1px solid #555;
+    border-radius: 4px;
+    background-color: #444;
+    color: white;
+    cursor: pointer;
+    transition: background-color 0.2s;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 180px;
+    justify-content: space-between;
+}
+
+.dropdown-button:hover {
+    background-color: #555;
+}
+
+.dropdown-button:focus {
+    outline: 2px solid #007BFF;
+    outline-offset: 2px;
+}
+
+.dropdown-arrow {
+    font-size: 0.8em;
+    transition: transform 0.2s;
+}
+
+.dropdown-button.open .dropdown-arrow {
+    transform: rotate(180deg);
+}
+
+.dropdown-menu {
+    position: absolute;
+    top: 100%;
+    left: 0;
+    margin-top: 4px;
+    background-color: #444;
+    border: 1px solid #555;
+    border-radius: 4px;
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+    z-index: 1000;
+    min-width: 100%;
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+.dropdown-menu.hidden {
+    display: none;
+}
+
+.checkbox-item {
+    display: flex;
+    align-items: center;
+    padding: 8px 12px;
+    cursor: pointer;
+    transition: background-color 0.2s;
+    white-space: nowrap;
+}
+
+.checkbox-item:hover {
+    background-color: #555;
+}
+
+.checkbox-item input[type="checkbox"] {
+    margin-right: 8px;
+    cursor: pointer;
+}
+
+.checkbox-item span {
+    color: white;
+    font-size: 0.95em;
+}
+
+.dropdown-separator {
+    height: 1px;
+    background-color: #666;
+    margin: 4px 0;
+}
+
+.server-warning {
+    background-color: #fff3cd;
+    border: 2px solid #ffc107;
+    border-radius: 5px;
+    margin: 20px;
+    padding: 0;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+    animation: slideDown 0.3s ease-out;
+}
+
+.server-warning.hidden {
+    display: none;
+}
+
+.warning-content {
+    display: flex;
+    align-items: center;
+    padding: 15px 20px;
+    gap: 15px;
+}
+
+.warning-icon {
+    font-size: 2em;
+    flex-shrink: 0;
+}
+
+.warning-text {
+    flex-grow: 1;
+}
+
+.warning-text strong {
+    display: block;
+    color: #856404;
+    font-size: 1.1em;
+    margin-bottom: 5px;
+}
+
+.warning-text p {
+    margin: 5px 0;
+    color: #856404;
+    font-size: 0.9em;
+}
+
+.warning-hint {
+    font-style: italic;
+    margin-top: 8px !important;
+}
+
+.warning-text code {
+    background-color: #fff;
+    padding: 2px 6px;
+    border-radius: 3px;
+    font-family: 'Courier New', monospace;
+    color: #333;
+}
+
+.close-warning {
+    background: none;
+    border: none;
+    font-size: 1.5em;
+    color: #856404;
+    cursor: pointer;
+    padding: 5px 10px;
+    flex-shrink: 0;
+    opacity: 0.7;
+    transition: opacity 0.2s;
+}
+
+.close-warning:hover {
+    opacity: 1;
+}
+
+@keyframes slideDown {
+    from {
+        opacity: 0;
+        transform: translateY(-20px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
 .video-grid {
     display: grid;
     /* This creates a responsive grid: 
@@ -20,7 +247,7 @@ header {
        where each column is at least 300px wide (minmax) */
     grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));
     gap: 20px;
-    padding: 0 20px;
+    padding: 0px 20px 20px 20px;
     margin: 0 auto;
 }
 
@@ -29,6 +256,19 @@ header {
     border: 1px solid #333;
     border-radius: 1px;
     text-align: center;
+    transition: border 0.3s;
+}
+
+.video-item.tagged-all-good {
+    border: 3px solid #28a745;
+}
+
+.video-item.tagged-all-wrong {
+    border: 3px solid #dc3545;
+}
+
+.video-item.tagged-warning {
+    border: 3px solid #ffc107;
 }
 
 .video-item video {
@@ -37,7 +277,13 @@ header {
     display: block;
     max-height: 512px;
     border-radius: 1px;
-    margin-bottom: 10px;
+}
+
+.title-container {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 5px 0px 5px 0px;
 }
 
 .video-title {
@@ -46,4 +292,31 @@ header {
     white-space: nowrap; /* Prevents text wrap */
     overflow: hidden;    /* Hides overflowing text */
     text-overflow: ellipsis; /* Shows "..." for overflow */
+    margin: 0;
+}
+
+.video-button {
+    background-color: #c7c7c7;
+    color: white;
+    border: none;
+    padding: 6px 6px;
+    margin: 2px 2px;
+    border-radius: 3px;
+    cursor: pointer;
+    font-size: 0.9em;
+    flex-shrink: 0;
+    transition: background-color 0.2s, transform 0.1s;
+}
+
+.video-button:hover {
+    background-color: #555;
+}
+
+.video-button.active {
+    background-color: #007BFF;
+    transform: scale(1.1);
+}
+
+.video-button.active:hover {
+    background-color: #0056b3;
 }

@@ -98,6 +98,11 @@ def main(root_dir: str, split:str, scene:str, timestamp:str):
         if instances_masks.max() < 256:
             instances_masks = instances_masks.astype(np.uint8)
         outputs_for_save = instances_masks  # (N, H, W)
+        print(f"shape: {outputs_for_save.shape}, dtype: {outputs_for_save.dtype}, max id: {outputs_for_save.max()}, min id: {outputs_for_save.min()}")
+        
+        # calculate percentage of 0 values
+        zero_percentage = np.sum(outputs_for_save == 0) / outputs_for_save.size * 100
+        print(f"Class '{cls}': {zero_percentage:.2f}% of the mask is background (0 values).")
         
         cls_outputs[cls] = outputs_for_save
     

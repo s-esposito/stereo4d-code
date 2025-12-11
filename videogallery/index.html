@@ -9,165 +9,56 @@
 <body>
 
     <header>
-        <h1>🎬 My Local Video Gallery</h1>
+        <h1>🎬 Stereo4D</h1>
+        
+        <!-- Filter controls -->
+        <div class="filter-controls">
+            <div class="filter-group">
+                <label for="tag-filter">Filter by tag:</label>
+                <select id="tag-filter">
+                    <option value="all">All Videos</option>
+                    <option value="all-good">✅ All Good</option>
+                    <option value="all-wrong">❌ All Wrong</option>
+                    <option value="warning">⚠️ Warning</option>
+                </select>
+            </div>
+            
+            <div class="filter-separator">|</div>
+            
+            <div class="filter-group">
+                <label for="class-filter">Filter by class:</label>
+                <div class="dropdown-container">
+                    <button id="class-filter-button" class="dropdown-button">
+                        <span id="class-filter-text">All Classes</span>
+                        <span class="dropdown-arrow">▼</span>
+                    </button>
+                    <div id="class-filter-dropdown" class="dropdown-menu hidden">
+                        <!-- Dynamically populated from videos.csv -->
+                    </div>
+                </div>
+            </div>
+            
+            <span id="video-count" class="video-count"></span>
+        </div>
     </header>
+
+    <!-- Server connection warning banner -->
+    <div id="server-warning" class="server-warning hidden">
+        <div class="warning-content">
+            <span class="warning-icon">⚠️</span>
+            <div class="warning-text">
+                <strong>Server Connection Failed</strong>
+                <p>Cannot connect to the server. Changes will be downloaded as files instead of saved to the server.</p>
+                <p class="warning-hint">Start the server with: <code>python server.py</code></p>
+            </div>
+            <button id="close-warning" class="close-warning">✕</button>
+        </div>
+    </div>
 
     <div class="video-grid" id="video-grid">
         </div>
 
-    <script>
-        
-        // This works without a server because the browser only needs the list
-        // and knows how to access the file path relative to the HTML file.
-        const videoFiles = [
-            // 10
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            // 10
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            // 10
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            // 10
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            // 10
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            // 10
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            // 10
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            // 10
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            // 10
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            // 10
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-            "H5xOyNqJkPs_38738739.mp4",
-        ];
-
-        const grid = document.getElementById('video-grid');
-        const videoFolder = 'videos/'; // The subfolder where your videos are
-        // const videoFolder = "/home/stefano/Codebase/stereo4d-code/videogallery/videos/"; // The subfolder where your videos
-
-        grid.innerHTML = ''; // Clear existing videos
-        
-        videoFiles.forEach(fileName => {
-
-            const videoContainer = document.createElement('div');
-            videoContainer.classList.add('video-item');
-
-            const videoElement = document.createElement('video');
-            videoElement.controls = true; // Show video controls (play, pause, etc.)
-            videoElement.muted = true;    // Mute by default for a smoother grid experience
-            videoElement.autoplay = true; // Play automatically (can be resource intensive)
-            videoElement.loop = true;     // Loop the video
-
-            const sourceElement = document.createElement('source');
-            let videoPath = videoFolder + fileName;
-            console.log("Loading video from path:", videoPath);
-            sourceElement.src = videoPath;
-            sourceElement.type = 'video/mp4'; // Explicitly state the type
-
-            videoElement.appendChild(sourceElement);
-
-            const title = document.createElement('p');
-            title.textContent = fileName;
-            title.classList.add('video-title');
-
-            videoContainer.appendChild(videoElement);
-            videoContainer.appendChild(title);
-            grid.appendChild(videoContainer);
-
-        });
-
-    </script>
+    <script src="script.js"></script>
 
 </body>
 </html>

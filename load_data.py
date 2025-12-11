@@ -121,10 +121,27 @@ def load_data(root_dir: str, split:str, scene:str, timestamp:str):
     # print("dp.keys():", dp.keys())
     
     # Load extrinsics (TODO Stefano: double check if this is indeed the right eye)
-    extrs_right = dp['extrs_rectified']
+    extrs_left = dp['extrs_rectified']
     # use baseline to compute left camera extrinsics
-    extrs_left = extrs_right.copy()
-    extrs_left[:, :3, 3] -= extrs_left[:, :3, 0] * baseline  # translate along x axis
+    extrs_right = extrs_left.copy()
+    extrs_right[:, :3, 3] -= extrs_right[:, :3, 0] * baseline  # translate along x axis
+    
+    # Invert both extrinsics to get camera-to-world
+    extrs_right_inv = []
+    extrs_left_inv = []
+    for fid in range(nfr):
+        cam_right = extrs_right[fid] # (3, 4)
+        # to (4, 4)
+        cam_right_hom = np.eye(4, dtype=np.float32)
+        cam_right_hom[:3, :4] = cam_right
+        extrs_right_inv.append(np.linalg.inv(cam_right_hom))
+        cam_left = extrs_left[fid] # (3, 4)
+        # to (4, 4)
+        cam_left_hom = np.eye(4, dtype=np.float32)
+        cam_left_hom[:3, :4] = cam_left
+        extrs_left_inv.append(np.linalg.inv(cam_left_hom))
+    extrs_right = np.stack(extrs_right_inv, axis=0)
+    extrs_left = np.stack(extrs_left_inv, axis=0)
     
     tracks3d = dp["track3d"]  # (N, T, 3)
     
@@ -204,8 +221,9 @@ def load_data(root_dir: str, split:str, scene:str, timestamp:str):
         tracks2d = []
         for t in range(tracks3d.shape[1]):
             points3d = tracks3d[:, t, :]  # (N, 3)
-            pose_c2w = np.eye(4, dtype=np.float32)
-            pose_c2w[:3, :4] = extrs_right[t]
+            # pose_c2w = np.eye(4, dtype=np.float32)
+            # pose_c2w[:3, :4] = extrs_right[t]
+            pose_c2w = extrs_right[t]
             
             points2d = utils.project_points_3d_to_2d(
                 points3d, K, pose_c2w
@@ -262,8 +280,9 @@ def load_data(root_dir: str, split:str, scene:str, timestamp:str):
             )  # (N,)
             points_depth[points_depth <= MIN_DEPTH] = np.nan  # mark invalid depth
             # unproject to 3d
-            pose_c2w = np.eye(4, dtype=np.float32)
-            pose_c2w[:3, :4] = extrs_right[t]
+            # pose_c2w = np.eye(4, dtype=np.float32)
+            # pose_c2w[:3, :4] = extrs_right[t]
+            pose_c2w = extrs_right[t]
             points3d = utils.unproject_points_2d_to_3d(
                 points2d, points_depth, K, pose_c2w
             )  # (N, 3)

@@ -344,6 +344,7 @@ class Renderer:
         self.render_tracks = False
         self.render_segmentation = False
         self.render_keyframes = False
+        self.render_time_color_coded = False
         
         # Initialize State
         self.state = {'fid': 0}
@@ -354,6 +355,13 @@ class Renderer:
         self.tracks3d = tracks3d  # (N, T, 3) or None
         self.instances_masks = instances_masks  # (T, H, W) or None
         self.keyframes_interval = 10   
+        
+        # Precompute time color coding (one rgb per frame, turbo colormap)
+        cmap = matplotlib.cm.get_cmap('turbo', len(rgbs))
+        # Generate normalized values from 0 to 1
+        time_values = np.linspace(0, 1, len(rgbs))
+        # Get RGB values (shape: (N, 4) with RGBA)
+        self.time_color_coding = (cmap(time_values)[:, :3] * 255.0).astype(np.uint8)
         
         # Precompute tracks colors
         if self.tracks3d is not None:
@@ -381,7 +389,13 @@ class Renderer:
         self.TRACK_LINES_NAME = "track_lines"
         
         self.o3d_renderer: OffscreenRenderer | SceneWidget = None  # to be initialized in the viewer setup
-            
+    
+    def _clean_keyframes_from_scene(self):
+        """Helper to clean keyframes from the scene."""
+        keyframes_fids = list(range(0, len(self.rgbs), self.keyframes_interval))
+        for kf_fid in keyframes_fids:
+            self.o3d_renderer.scene.remove_geometry(f"{self.PCD_NAME}_{kf_fid}")
+    
     def _update_geometry(self, fid):
         """Helper to update the geometry based on frame index."""
         
@@ -456,7 +470,7 @@ class Renderer:
     def _init_grid_xz(self):
         assert self.o3d_renderer is not None, "Renderer not initialized."
 
-        grid = create_grid(size=20.0, n=20, plane='xz', height=0.0)
+        grid = create_grid(size=100.0, n=100, plane='xz', height=0.0)
         grid_material = MaterialRecord()
         grid_material.shader = "unlitLine"
         grid_material.line_width = 0.5
@@ -475,6 +489,9 @@ class Renderer:
             # Add initial point cloud
             if self.render_segmentation and self.instances_masks is not None:
                 rgb = self.instance_colors[self.instances_masks[kf_fid].reshape(-1)].reshape(self.instances_masks[kf_fid].shape[0], self.instances_masks[kf_fid].shape[1], -1)
+            elif self.render_time_color_coded:
+                rgb = self.time_color_coding[kf_fid]
+                rgb = np.tile(rgb.reshape(1, 1, 3), (self.depths[kf_fid].shape[0], self.depths[kf_fid].shape[1], 1))  # broadcast to image size
             else:
                 rgb = self.rgbs[kf_fid]
             
@@ -521,6 +538,9 @@ class Renderer:
         # Add initial point cloud
         if self.render_segmentation and self.instances_masks is not None:
             rgb = self.instance_colors[self.instances_masks[fid].reshape(-1)].reshape(self.instances_masks[fid].shape[0], self.instances_masks[fid].shape[1], -1)
+        elif self.render_time_color_coded:
+            rgb = self.time_color_coding[fid]
+            rgb = np.tile(rgb.reshape(1, 1, 3), (self.depths[fid].shape[0], self.depths[fid].shape[1], 1))  # broadcast to image size
         else:
             rgb = self.rgbs[fid]
         
@@ -658,9 +678,27 @@ class OnlineRendererApp(Renderer):
         # Init first frame
         initial_pcd = self._init_frame(fid=0)
         
-        # Set Camera View
-        bounds = initial_pcd.get_axis_aligned_bounding_box()
-        self.o3d_renderer.setup_camera(60, bounds, bounds.get_center())
+        # Set Camera View - store bounds and center for camera view switching
+        self.bounds = initial_pcd.get_axis_aligned_bounding_box()
+        self.scene_center = self.bounds.get_center()
+        self.o3d_renderer.setup_camera(60, self.bounds, self.scene_center)
+        
+        # # Estimate the size of the scene to position the camera far enough away
+        # scene_size = np.linalg.norm(bounds.get_max_bound() - bounds.get_min_bound())
+        # camera_distance = scene_size * 0.75
+        
+        # # Position the eye (viewer camera) relative to the center
+        # # Example: Looking down and slightly in front (positive Z, positive Y)
+        # eye = scene_center + np.array([camera_distance * 0.5, -camera_distance * 0.5, -camera_distance * 0.8])
+        # up = np.array([0, 1, 0]) # Standard Up vector for world coordinates
+
+        # # Set the camera view using OffscreenRenderer's supported overload 1
+        # self.o3d_renderer.setup_camera(
+        #     60.0,    # vertical_field_of_view (e.g., 60 degrees)
+        #     scene_center,  # The point the camera looks at
+        #     eye,     # The position of the camera
+        #     up       # The vector defining 'up' for the camera
+        # )
 
         # Register the tick callback
         # FIX: Use set_on_tick_event on the window instead of add_timer on the app
@@ -673,30 +711,84 @@ class OnlineRendererApp(Renderer):
         # Store the layout as a member variable so we can resize it in _on_layout
         self.layout = gui.Vert(em, gui.Margins(em, em, em, em)) 
         
-        # Slider for frame index
+        # Frame slider section
+        frame_label = gui.Label("Frame")
+        self.layout.add_child(frame_label)
+        
         self.slider = gui.Slider(gui.Slider.INT)
         self.slider.set_limits(0, len(self.rgbs) - 1)
         self.slider.double_value = 0.0 
         self.slider.set_on_value_changed(self._on_slider_changed)
         self.layout.add_child(self.slider)
         
-        # Toggle buttons to show tracks
-        self.show_tracks_checkbox = gui.Checkbox("Show 3D Tracks")
+        # Add spacing
+        self.layout.add_fixed(em * 0.5)
+        
+        # Rendering options section
+        options_label = gui.Label("Rendering Options")
+        self.layout.add_child(options_label)
+        
+        # Stack checkboxes vertically
+        self.show_tracks_checkbox = gui.Checkbox("3D Tracks")
         self.show_tracks_checkbox.checked = self.render_tracks
         self.show_tracks_checkbox.set_on_checked(self._on_show_tracks_toggled)
         self.layout.add_child(self.show_tracks_checkbox)
         
-        # Toggle button to show segmentation
-        self.show_segmentation_checkbox = gui.Checkbox("Show Segmentation")
+        self.show_segmentation_checkbox = gui.Checkbox("Segmentation")
         self.show_segmentation_checkbox.checked = self.render_segmentation
         self.show_segmentation_checkbox.set_on_checked(self._on_show_segmentation_toggled)
         self.layout.add_child(self.show_segmentation_checkbox)
         
-        # Toggle button to show keyframes
-        self.show_keyframes_checkbox = gui.Checkbox("Show Keyframes")
+        self._on_show_time_color_coded_toggled(self.render_time_color_coded)
+        self.show_time_color_coded_checkbox = gui.Checkbox("Time Color Coded")
+        self.show_time_color_coded_checkbox.checked = self.render_time_color_coded
+        self.show_time_color_coded_checkbox.set_on_checked(self._on_show_time_color_coded_toggled)
+        self.layout.add_child(self.show_time_color_coded_checkbox)
+        
+        self.show_keyframes_checkbox = gui.Checkbox("Keyframes")
         self.show_keyframes_checkbox.checked = self.render_keyframes
         self.show_keyframes_checkbox.set_on_checked(self._on_show_keyframes_toggled)
         self.layout.add_child(self.show_keyframes_checkbox)
+        
+        # Add spacing
+        self.layout.add_fixed(em * 0.5)
+        
+        # Camera views section
+        camera_label = gui.Label("Camera Views")
+        self.layout.add_child(camera_label)
+        
+        # Create two rows of camera view buttons
+        camera_view_row1 = gui.Horiz(em * 0.5)
+        
+        self.view_top_button = gui.Button("Top")
+        self.view_top_button.set_on_clicked(self._on_view_top)
+        camera_view_row1.add_child(self.view_top_button)
+        
+        self.view_front_button = gui.Button("Front")
+        self.view_front_button.set_on_clicked(self._on_view_front)
+        camera_view_row1.add_child(self.view_front_button)
+        
+        self.view_right_button = gui.Button("Right")
+        self.view_right_button.set_on_clicked(self._on_view_right)
+        camera_view_row1.add_child(self.view_right_button)
+        
+        self.layout.add_child(camera_view_row1)
+        
+        camera_view_row2 = gui.Horiz(em * 0.5)
+        
+        self.view_bottom_button = gui.Button("Bottom")
+        self.view_bottom_button.set_on_clicked(self._on_view_bottom)
+        camera_view_row2.add_child(self.view_bottom_button)
+        
+        self.view_back_button = gui.Button("Back")
+        self.view_back_button.set_on_clicked(self._on_view_back)
+        camera_view_row2.add_child(self.view_back_button)
+        
+        self.view_left_button = gui.Button("Left")
+        self.view_left_button.set_on_clicked(self._on_view_left)
+        camera_view_row2.add_child(self.view_left_button)
+        
+        self.layout.add_child(camera_view_row2)
         
         self.panel.add_child(self.layout)
         self.window.add_child(self.panel)
@@ -704,11 +796,11 @@ class OnlineRendererApp(Renderer):
 
     def _on_layout(self, layout_context):
         r = self.window.content_rect
-        panel_height = 160
-        # Panel is positioned at the top
-        self.panel.frame = gui.Rect(r.x, r.y, r.width, panel_height)
-        # Scene widget takes the bottom portion
-        self.o3d_renderer.frame = gui.Rect(r.x, r.y + panel_height, r.width, r.height - panel_height)
+        panel_width = 250  # Width of the left-side panel
+        # Panel is positioned on the left side
+        self.panel.frame = gui.Rect(r.x, r.y, panel_width, r.height)
+        # Scene widget takes the right portion
+        self.o3d_renderer.frame = gui.Rect(r.x + panel_width, r.y, r.width - panel_width, r.height)
 
     def _on_slider_changed(self, new_val):
         """Handle manual slider movement immediately."""
@@ -723,10 +815,22 @@ class OnlineRendererApp(Renderer):
         self.o3d_renderer.scene.remove_geometry(self.TRACK_LINES_NAME)
         # Update geometry to reflect change
         self._update_geometry(self.state['fid'])
-        
+    
     def _on_show_segmentation_toggled(self, is_checked):
         """Handle toggling of segmentation rendering."""
         self.render_segmentation = is_checked
+        # Update geometry to reflect change
+        if self.render_keyframes:
+            # Clean scene from keyframes
+            self._clean_keyframes_from_scene()
+            # Re-init keyframe rendering
+            self._init_keyframes()
+        else:
+            self._update_geometry(self.state['fid'])
+            
+    def _on_show_time_color_coded_toggled(self, is_checked):
+        """Handle toggling of time color coding rendering."""
+        self.render_time_color_coded = is_checked
         # Update geometry to reflect change
         if self.render_keyframes:
             # Clean scene from keyframes
@@ -757,6 +861,43 @@ class OnlineRendererApp(Renderer):
             # Re-init single frame rendering
             self._init_frame(fid=self.state['fid'])  # re-init single frame rendering
             self._update_geometry(self.state['fid'])
+    
+    def _set_camera_view(self, eye_offset, up_vector):
+        """Helper method to set camera view from a given offset and up vector."""
+        scene_size = np.linalg.norm(self.bounds.get_max_bound() - self.bounds.get_min_bound())
+        distance = scene_size * 1.5
+        eye = self.scene_center + eye_offset * distance
+        
+        # Use look_at if available, otherwise fall back to setup_camera
+        try:
+            self.o3d_renderer.look_at(self.scene_center, eye, up_vector)
+        except AttributeError:
+            # Fallback: just reset to default view with bounds
+            self.o3d_renderer.setup_camera(60, self.bounds, self.scene_center)
+    
+    def _on_view_top(self):
+        """Set camera to top view (looking down on XZ plane)."""
+        self._set_camera_view(np.array([0, 1, 0]), np.array([0, 0, -1]))
+    
+    def _on_view_bottom(self):
+        """Set camera to bottom view (looking up from below)."""
+        self._set_camera_view(np.array([0, -1, 0]), np.array([0, 0, 1]))
+    
+    def _on_view_left(self):
+        """Set camera to left view (looking along +X axis)."""
+        self._set_camera_view(np.array([-1, 0, 0]), np.array([0, 1, 0]))
+    
+    def _on_view_right(self):
+        """Set camera to right view (looking along -X axis)."""
+        self._set_camera_view(np.array([1, 0, 0]), np.array([0, 1, 0]))
+    
+    def _on_view_front(self):
+        """Set camera to front view (looking along +Z axis)."""
+        self._set_camera_view(np.array([0, 0, 1]), np.array([0, 1, 0]))
+    
+    def _on_view_back(self):
+        """Set camera to back view (looking along -Z axis)."""
+        self._set_camera_view(np.array([0, 0, -1]), np.array([0, 1, 0]))
 
     def _on_tick(self):
         """
@@ -798,6 +939,7 @@ def run_open3d_viewer(
     K = intr_normalized.copy()
     K[0, :] *= width
     K[1, :] *= height
+    print("Intrinsic Matrix K:\n", K)
     
     gui.Application.instance.initialize()
     app = OnlineRendererApp(rgbs, depths, K, poses_c2w, tracks3d, instances_masks)
@@ -830,7 +972,8 @@ class OffscreenRendererApp(Renderer):
         # Calculate the view matrix (world-to-camera) from the camera-to-world pose
         # We want a view that encompasses the scene, typically centered on the point cloud.
         bounds = initial_pcd.get_axis_aligned_bounding_box()
-        self.scene_center = bounds.get_center()
+        # self.scene_center = bounds.get_center()
+        self.scene_center = np.array([0.0, 0.0, 3.0])
         
         # Determine a suitable camera position (eye) and up vector
         # This example places the viewer camera (eye) slightly above and behind the scene
@@ -838,11 +981,12 @@ class OffscreenRendererApp(Renderer):
         
         # Estimate the size of the scene to position the camera far enough away
         scene_size = np.linalg.norm(bounds.get_max_bound() - bounds.get_min_bound())
-        self.camera_distance = scene_size * 0.75
+        # self.camera_distance = scene_size * 1.0
+        self.camera_distance = 8.0
         
         # Position the eye (viewer camera) relative to the center
         # Example: Looking down and slightly in front (positive Z, positive Y)
-        eye = self.scene_center + np.array([self.camera_distance * 0.5, -self.camera_distance * 0.5, -self.camera_distance * 0.8])
+        eye = self.scene_center + np.array([self.camera_distance * 0.5, -self.camera_distance * 0.5, -self.camera_distance * 0.5])
         self.up = np.array([0, 1, 0]) # Standard Up vector for world coordinates
 
         # Set the camera view using OffscreenRenderer's supported overload 1
@@ -873,7 +1017,8 @@ def run_open3d_offline_renderer(
     # 
     app.render_keyframes = False
     app.render_segmentation = False
-    app.render_tracks = True
+    app.render_tracks = False
+    app.render_time_color_coded = False
     
     def render_image():
         # Render the image
@@ -906,58 +1051,90 @@ def run_open3d_offline_renderer(
         
         frames.append(combined_image)
         
-        # # Update the camera view
-        # eye = app.scene_center + np.array([app.camera_distance * 0.5, -app.camera_distance * 0.5, -app.camera_distance * 0.8])
-        
-        # app.o3d_renderer.setup_camera(
-        #     60.0,    # vertical_field_of_view (e.g., 60 degrees)
-        #     app.scene_center,  # The point the camera looks at
-        #     eye,     # The position of the camera
-        #     app.up       # The vector defining 'up' for the camera
-        # )
+    rgb_frames = np.array(frames)  # Convert list to numpy array (T, H, W, 3)
     
     if instances_masks is None:
-        return frames
+        
+        black_frame = np.zeros_like(rgb_frames)  # (T, H, W, 3)
+        final_frames = np.concatenate((rgb_frames, black_frame), axis=1)  # (T, H*2, W, 3)
     
-    # 
-    app.render_keyframes = False
-    app.render_segmentation = True
-    app.render_tracks = False
-    
-    for fid in tqdm(range(nr_frames), desc="Rendering Segmentation"):
-    
-        # Generate the point cloud for the specified frame index (fid)
-        app._update_geometry(fid)
+    else:
+        # render segmentation frames
+        
+        frames = []
+        
+        # 
+        app.render_keyframes = False
+        app.render_segmentation = True
+        app.render_tracks = False
+        app.render_time_color_coded = False
+        
+        for fid in tqdm(range(nr_frames), desc="Rendering Segmentation"):
+        
+            # Generate the point cloud for the specified frame index (fid)
+            app._update_geometry(fid)
 
-        # Render the image
-        image = app.o3d_renderer.render_to_image()
-        
-        # Convert to numpy array
-        image = np.asarray(image)
-        
-        # Flip image vertically
-        image = np.flipud(image)
-        
-        # Flip image horizontally
-        image = np.fliplr(image)
-        
-        # sRGB to linear color space conversion
-        image = utils.srgb_to_linear(image)
-        
-        # concat segmentation image to the left of the rendered image
-        segmentation_rgb = app.instance_colors[instances_masks[fid].reshape(-1)].reshape(instances_masks[fid].shape[0], instances_masks[fid].shape[1], -1)
-        combined_image = np.concatenate((segmentation_rgb, image), axis=1)
-        
-        frames.append(combined_image)
-        
-        # # Update the camera view
-        # eye = app.scene_center + np.array([app.camera_distance * 0.5, -app.camera_distance * 0.5, -app.camera_distance * 0.8])
-        
-        # app.o3d_renderer.setup_camera(
-        #     60.0,    # vertical_field_of_view (e.g., 60 degrees)
-        #     app.scene_center,  # The point the camera looks at
-        #     eye,     # The position of the camera
-        #     app.up       # The vector defining 'up' for the camera
-        # )
+            # Render the image
+            image = app.o3d_renderer.render_to_image()
+            
+            # Convert to numpy array
+            image = np.asarray(image)
+            
+            # Flip image vertically
+            image = np.flipud(image)
+            
+            # Flip image horizontally
+            image = np.fliplr(image)
+            
+            # sRGB to linear color space conversion
+            image = utils.srgb_to_linear(image)
+            
+            # concat segmentation image to the left of the rendered image
+            segmentation_rgb = app.instance_colors[instances_masks[fid].reshape(-1)].reshape(instances_masks[fid].shape[0], instances_masks[fid].shape[1], -1)
+            combined_image = np.concatenate((segmentation_rgb, image), axis=1)
+            
+            frames.append(combined_image)
+            
+        segm_frames = np.array(frames)  # Convert list to numpy array (T, H, W, 3)
+        final_frames = np.concatenate((rgb_frames, segm_frames), axis=1)  # (T, H*2, W, 3)
     
-    return frames
+    # render keyframes (only once)
+    
+    # Clean scene
+    app.o3d_renderer.scene.remove_geometry(app.TRACK_LINES_NAME)
+    app.o3d_renderer.scene.remove_geometry(app.PCD_NAME)
+    
+    app.render_keyframes = True
+    app.render_segmentation = False
+    app.render_tracks = False
+    app.render_time_color_coded = False
+    app._clean_keyframes_from_scene()
+    app._init_keyframes()
+    
+    keyframe_image = render_image()
+    keyframe_image = np.asarray(keyframe_image)  # (H, W, 3)
+    
+    # render keyframes (time color coded, only once)
+    
+    app.render_keyframes = True
+    app.render_segmentation = False
+    app.render_tracks = False
+    app.render_time_color_coded = True
+    app._clean_keyframes_from_scene()
+    app._init_keyframes()
+    
+    keyframe_time_color_coded_image = render_image()
+    keyframe_time_color_coded_image = np.asarray(keyframe_time_color_coded_image)  # (H, W, 3)
+    
+    # concat keyframes renders vertically
+    keyframe_frames = np.concatenate((keyframe_image, keyframe_time_color_coded_image), axis=0)  # (H*2, W, 3)
+    
+    # concat to all frames horizontally
+    final_frames = np.concatenate((final_frames, keyframe_frames[None, :, :, :].repeat(nr_frames, axis=0)), axis=2)  # (T, H*2, W*2, 3)
+    
+    print("Rendered frames shape:", final_frames.shape)
+    
+    # convert to list of frames
+    final_frames = [final_frames[i] for i in range(final_frames.shape[0])]
+    
+    return final_frames
