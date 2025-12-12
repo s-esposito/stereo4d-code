@@ -11,6 +11,11 @@
     <header>
         <h1>🎬 Stereo4D</h1>
         
+        <!-- Search bar -->
+        <div class="search-controls">
+            <input type="text" id="scene-search" placeholder="🔍 Search by scene name..." />
+        </div>
+        
         <!-- Filter controls -->
         <div class="filter-controls">
             <div class="filter-group">
@@ -57,6 +62,13 @@
 
     <div class="video-grid" id="video-grid">
         </div>
+
+    <!-- Pagination controls -->
+    <div class="pagination-controls" id="pagination-controls">
+        <button id="prev-page" class="pagination-button">← Previous</button>
+        <span id="page-info" class="page-info">Page 1 of 1</span>
+        <button id="next-page" class="pagination-button">Next →</button>
+    </div>
 
     <script src="script.js"></script>
 

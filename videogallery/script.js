@@ -1,4 +1,5 @@
 const nr_videos_to_load = 100;
+const VIDEOS_PER_PAGE = 50;
 
 // API base URL - change this if running server on different host/port
 const API_BASE = '/api/database';
@@ -8,6 +9,10 @@ let database = {};
 
 // Server connection status
 let serverConnected = false;
+
+// Pagination state
+let currentPage = 1;
+let totalPages = 1;
 
 // Show server warning banner
 function showServerWarning() {
@@ -141,13 +146,30 @@ let videoFiles = [];
 let videoClassesMap = {}; // Map of filename -> classes array
 let currentTagFilter = 'all';
 let currentClassFilters = ['all']; // Array to support multiple class filters
+let currentSearchQuery = ''; // Current search query
 
-// Filter videos based on selected tag and classes
-function filterVideos(tagFilter = null, classFilters = null) {
+// Filter videos based on selected tag, classes, and search query
+function filterVideos(tagFilter = null, classFilters = null, searchQuery = null, resetPage = true) {
     if (tagFilter !== null) currentTagFilter = tagFilter;
     if (classFilters !== null) currentClassFilters = classFilters;
+    if (searchQuery !== null) currentSearchQuery = searchQuery;
+    
+    // Reset to page 1 when filters change
+    if (resetPage) {
+        currentPage = 1;
+    }
     
     let filteredFiles = videoFiles;
+    
+    // Apply search filter (by scene name)
+    if (currentSearchQuery.trim() !== '') {
+        const query = currentSearchQuery.toLowerCase().trim();
+        filteredFiles = filteredFiles.filter(fileName => {
+            // Extract scene name (part before the underscore)
+            const sceneName = fileName.split('_')[0].toLowerCase();
+            return sceneName.includes(query);
+        });
+    }
     
     // Apply tag filter
     if (currentTagFilter !== 'all') {
@@ -180,11 +202,54 @@ function filterVideos(tagFilter = null, classFilters = null) {
         });
     }
     
+    // Calculate total pages
+    totalPages = Math.max(1, Math.ceil(filteredFiles.length / VIDEOS_PER_PAGE));
+    
     // Update video count
     updateVideoCount(filteredFiles.length, videoFiles.length);
     
+    // Update pagination info
+    updatePagination();
+    
     // Reload videos with filtered list
     loadVideos(filteredFiles);
+}
+
+// Update pagination controls
+function updatePagination() {
+    const pageInfo = document.getElementById('page-info');
+    const prevButton = document.getElementById('prev-page');
+    const nextButton = document.getElementById('next-page');
+    
+    if (pageInfo) {
+        pageInfo.textContent = `Page ${currentPage} of ${totalPages}`;
+    }
+    
+    if (prevButton) {
+        prevButton.disabled = currentPage <= 1;
+    }
+    
+    if (nextButton) {
+        nextButton.disabled = currentPage >= totalPages;
+    }
+}
+
+// Go to next page
+function nextPage() {
+    if (currentPage < totalPages) {
+        currentPage++;
+        filterVideos(null, null, null, false);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+}
+
+// Go to previous page
+function prevPage() {
+    if (currentPage > 1) {
+        currentPage--;
+        filterVideos(null, null, null, false);
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
 }
 
 // Update the class filter button text based on selected checkboxes
@@ -386,8 +451,12 @@ loadDatabase().then(() => {
             // Populate class filter dropdown with unique classes from loaded videos
             populateClassFilter();
             
+            // Calculate initial total pages
+            totalPages = Math.max(1, Math.ceil(videoFiles.length / VIDEOS_PER_PAGE));
+            
             loadVideos(videoFiles);
             updateVideoCount(videoFiles.length, videoFiles.length);
+            updatePagination();
         })
         .catch(error => {
             console.error('Error loading video list:', error);
@@ -401,10 +470,30 @@ document.addEventListener('DOMContentLoaded', () => {
         closeButton.addEventListener('click', hideServerWarning);
     }
     
+    // Pagination buttons
+    const prevButton = document.getElementById('prev-page');
+    const nextButton = document.getElementById('next-page');
+    
+    if (prevButton) {
+        prevButton.addEventListener('click', prevPage);
+    }
+    
+    if (nextButton) {
+        nextButton.addEventListener('click', nextPage);
+    }
+    
+    // Search input functionality
+    const searchInput = document.getElementById('scene-search');
+    if (searchInput) {
+        searchInput.addEventListener('input', (e) => {
+            filterVideos(null, null, e.target.value);
+        });
+    }
+    
     const filterSelect = document.getElementById('tag-filter');
     if (filterSelect) {
         filterSelect.addEventListener('change', (e) => {
-            filterVideos(e.target.value, null);
+            filterVideos(e.target.value, null, null);
         });
     }
     
@@ -444,8 +533,13 @@ function loadVideos(videoFiles) {
 
     // Sort videoFiles alphabetically
     videoFiles.sort();
+    
+    // Calculate pagination
+    const startIndex = (currentPage - 1) * VIDEOS_PER_PAGE;
+    const endIndex = startIndex + VIDEOS_PER_PAGE;
+    const videosToDisplay = videoFiles.slice(startIndex, endIndex);
 
-    videoFiles.forEach(fileName => {
+    videosToDisplay.forEach(fileName => {
 
         const videoContainer = document.createElement('div');
         videoContainer.classList.add('video-item');
@@ -482,6 +576,27 @@ function loadVideos(videoFiles) {
         title.textContent = fileName;
         title.classList.add('video-title');
 
+        // Add semantic classes display
+        const classesDisplay = document.createElement('div');
+        classesDisplay.classList.add('video-classes');
+        
+        // Get classes from database or videoClassesMap
+        let videoClasses = [];
+        if (database[fileName] && database[fileName].classes) {
+            videoClasses = database[fileName].classes;
+        } else if (videoClassesMap[fileName]) {
+            videoClasses = videoClassesMap[fileName];
+        }
+        
+        if (videoClasses && videoClasses.length > 0) {
+            videoClasses.forEach(cls => {
+                const classTag = document.createElement('span');
+                classTag.classList.add('class-tag');
+                classTag.textContent = cls;
+                classesDisplay.appendChild(classTag);
+            });
+        }
+
         // add a button to copy visualization script 
         // e.g. python view_sample.py --view --scene=4uCq66L-tFs --timestamp=100650651
         
@@ -510,12 +625,34 @@ function loadVideos(videoFiles) {
             allGoodButton.classList.add('active');
         }
         allGoodButton.onclick = () => {
-            updateVideoTag(fileName, 'all-good');
-            allGoodButton.classList.toggle('active');
-            // Toggle green border on video container
-            videoContainer.classList.toggle('tagged-all-good');
+            const wasActive = allGoodButton.classList.contains('active');
+            
+            // If clicking an already active button, just deactivate it
+            if (wasActive) {
+                updateVideoTag(fileName, 'all-good'); // Remove the tag
+                allGoodButton.classList.remove('active');
+                videoContainer.classList.remove('tagged-all-good');
+            } else {
+                // Deactivate other quality buttons first
+                if (allWrongButton.classList.contains('active')) {
+                    updateVideoTag(fileName, 'all-wrong'); // Remove all-wrong tag
+                    allWrongButton.classList.remove('active');
+                    videoContainer.classList.remove('tagged-all-wrong');
+                }
+                if (warningButton.classList.contains('active')) {
+                    updateVideoTag(fileName, 'warning'); // Remove warning tag
+                    warningButton.classList.remove('active');
+                    videoContainer.classList.remove('tagged-warning');
+                }
+                
+                // Activate this button
+                updateVideoTag(fileName, 'all-good'); // Add the tag
+                allGoodButton.classList.add('active');
+                videoContainer.classList.add('tagged-all-good');
+            }
+            
             // Refresh filter if needed
-            if (currentTagFilter !== 'all' || !currentClassFilters.includes('all')) {
+            if (currentTagFilter !== 'all' || !currentClassFilters.includes('all') || currentSearchQuery !== '') {
                 setTimeout(() => filterVideos(), 100);
             }
         };
@@ -529,12 +666,34 @@ function loadVideos(videoFiles) {
             allWrongButton.classList.add('active');
         }
         allWrongButton.onclick = () => {
-            updateVideoTag(fileName, 'all-wrong');
-            allWrongButton.classList.toggle('active');
-            // Toggle red border on video container
-            videoContainer.classList.toggle('tagged-all-wrong');
+            const wasActive = allWrongButton.classList.contains('active');
+            
+            // If clicking an already active button, just deactivate it
+            if (wasActive) {
+                updateVideoTag(fileName, 'all-wrong'); // Remove the tag
+                allWrongButton.classList.remove('active');
+                videoContainer.classList.remove('tagged-all-wrong');
+            } else {
+                // Deactivate other quality buttons first
+                if (allGoodButton.classList.contains('active')) {
+                    updateVideoTag(fileName, 'all-good'); // Remove all-good tag
+                    allGoodButton.classList.remove('active');
+                    videoContainer.classList.remove('tagged-all-good');
+                }
+                if (warningButton.classList.contains('active')) {
+                    updateVideoTag(fileName, 'warning'); // Remove warning tag
+                    warningButton.classList.remove('active');
+                    videoContainer.classList.remove('tagged-warning');
+                }
+                
+                // Activate this button
+                updateVideoTag(fileName, 'all-wrong'); // Add the tag
+                allWrongButton.classList.add('active');
+                videoContainer.classList.add('tagged-all-wrong');
+            }
+            
             // Refresh filter if needed
-            if (currentTagFilter !== 'all' || !currentClassFilters.includes('all')) {
+            if (currentTagFilter !== 'all' || !currentClassFilters.includes('all') || currentSearchQuery !== '') {
                 setTimeout(() => filterVideos(), 100);
             }
         };
@@ -548,23 +707,57 @@ function loadVideos(videoFiles) {
             warningButton.classList.add('active');
         }
         warningButton.onclick = () => {
-            updateVideoTag(fileName, 'warning');
-            warningButton.classList.toggle('active');
-            // Toggle yellow border on video container
-            videoContainer.classList.toggle('tagged-warning');
+            const wasActive = warningButton.classList.contains('active');
+            
+            // If clicking an already active button, just deactivate it
+            if (wasActive) {
+                updateVideoTag(fileName, 'warning'); // Remove the tag
+                warningButton.classList.remove('active');
+                videoContainer.classList.remove('tagged-warning');
+            } else {
+                // Deactivate other quality buttons first
+                if (allGoodButton.classList.contains('active')) {
+                    updateVideoTag(fileName, 'all-good'); // Remove all-good tag
+                    allGoodButton.classList.remove('active');
+                    videoContainer.classList.remove('tagged-all-good');
+                }
+                if (allWrongButton.classList.contains('active')) {
+                    updateVideoTag(fileName, 'all-wrong'); // Remove all-wrong tag
+                    allWrongButton.classList.remove('active');
+                    videoContainer.classList.remove('tagged-all-wrong');
+                }
+                
+                // Activate this button
+                updateVideoTag(fileName, 'warning'); // Add the tag
+                warningButton.classList.add('active');
+                videoContainer.classList.add('tagged-warning');
+            }
+            
             // Refresh filter if needed
-            if (currentTagFilter !== 'all' || !currentClassFilters.includes('all')) {
+            if (currentTagFilter !== 'all' || !currentClassFilters.includes('all') || currentSearchQuery !== '') {
                 setTimeout(() => filterVideos(), 100);
             }
         };
 
         const titleContainer = document.createElement('div');
         titleContainer.classList.add('title-container');
-        titleContainer.appendChild(title);
-        titleContainer.appendChild(copyButton);
-        titleContainer.appendChild(allGoodButton);
-        titleContainer.appendChild(allWrongButton);
-        titleContainer.appendChild(warningButton);
+        
+        // Title and classes row
+        const infoContainer = document.createElement('div');
+        infoContainer.classList.add('video-info');
+        infoContainer.appendChild(title);
+        infoContainer.appendChild(classesDisplay);
+        
+        // Buttons row
+        const buttonsContainer = document.createElement('div');
+        buttonsContainer.classList.add('video-buttons');
+        buttonsContainer.appendChild(copyButton);
+        buttonsContainer.appendChild(allGoodButton);
+        buttonsContainer.appendChild(allWrongButton);
+        buttonsContainer.appendChild(warningButton);
+        
+        titleContainer.appendChild(infoContainer);
+        titleContainer.appendChild(buttonsContainer);
 
         videoContainer.appendChild(videoElement);
         videoContainer.appendChild(titleContainer);

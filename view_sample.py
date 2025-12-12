@@ -21,8 +21,12 @@ if __name__ == "__main__":
     parser.add_argument('--scene', type=str, required=False, default="H5xOyNqJkPs", help='Scene identifier')
     parser.add_argument('--timestamp', type=str, required=False, default="38738739", help='Timestamp identifier')
     parser.add_argument('--view', action='store_true', help='Whether to view the data using Open3D, else uses offline visualization')
+    parser.add_argument('--view-in-browser', action='store_true', help='Whether to view the data in browser')
     parser.add_argument('--output-video-path', type=str, required=False, default="videogallery/videos", help='Output path for the generated video')
     args = parser.parse_args()
+    
+    if args.view and args.view_in_browser:
+        o3d.visualization.webrtc_server.enable_webrtc()
     
     input_dict = load_data(args.root_dir, args.split, args.scene, args.timestamp)
 
