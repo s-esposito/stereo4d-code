@@ -7,15 +7,17 @@ import open3d.visualization.rendering as rendering
 from open3d.visualization.rendering import OffscreenRenderer, MaterialRecord, Open3DScene
 import numpy as np
 import time
+import cv2
 import matplotlib
 
 def toOpen3dCloud(points,colors=None,normals=None):
     cloud = o3d.geometry.PointCloud()
     cloud.points = o3d.utility.Vector3dVector(points.astype(np.float64))
     if colors is not None:
-        if colors.max()>1:
+        # Check if colors array is not empty before accessing max()
+        if colors.size > 0 and colors.max() > 1:
             colors = colors/255.0
-            cloud.colors = o3d.utility.Vector3dVector(colors.astype(np.float64))
+        cloud.colors = o3d.utility.Vector3dVector(colors.astype(np.float64))
     if normals is not None:
         cloud.normals = o3d.utility.Vector3dVector(normals.astype(np.float64))
     return cloud
@@ -345,6 +347,7 @@ class Renderer:
         self.render_segmentation = False
         self.render_keyframes = False
         self.render_time_color_coded = False
+        self.render_bboxes = False
         
         # Initialize State
         self.state = {'fid': 0}
@@ -354,7 +357,8 @@ class Renderer:
         self.poses_c2w = poses_c2w  # (T, 4, 4) or tuple of two (T, 4, 4)
         self.tracks3d = tracks3d  # (N, T, 3) or None
         self.instances_masks = instances_masks  # (T, H, W) or None
-        self.keyframes_interval = 10   
+        self.nr_keyframes = 10
+        self.keyframes_interval = max(10, len(rgbs) // self.nr_keyframes)  # one every 
         
         # Precompute time color coding (one rgb per frame, turbo colormap)
         cmap = matplotlib.cm.get_cmap('turbo', len(rgbs))
@@ -377,11 +381,20 @@ class Renderer:
         # Precompute instance colors if instance masks are provided
         if self.instances_masks is not None:
             self.instance_colors = compute_instances_colors(self.instances_masks)
-            
+        
+        # Precompute unique instance ids (global)
+        self.unique_instance_ids = None
+        if self.instances_masks is not None:
+            self.unique_instance_ids = np.unique(self.instances_masks)
+        
         # Setup Material and Initial Geometry
-        self.material = MaterialRecord()
-        self.material.shader = "defaultUnlit"  # Unlit shader bypasses lighting calculations
-        self.material.point_size = 1.0
+        self.point_material = MaterialRecord()
+        self.point_material.shader = "defaultUnlit"  # Unlit shader bypasses lighting calculations
+        self.point_material.point_size = 2.0
+        
+        self.line_material = MaterialRecord()
+        self.line_material.shader = "unlitLine"
+        self.line_material.line_width = 3.0
         
         self.PCD_NAME = "current_point_cloud"
         self.CAMERA_TRAJECTORY_NAME = "camera_trajectory"
@@ -392,6 +405,9 @@ class Renderer:
     
     def _clean_keyframes_from_scene(self):
         """Helper to clean keyframes from the scene."""
+        
+        assert self.o3d_renderer is not None, "Renderer not initialized."
+        
         keyframes_fids = list(range(0, len(self.rgbs), self.keyframes_interval))
         for kf_fid in keyframes_fids:
             self.o3d_renderer.scene.remove_geometry(f"{self.PCD_NAME}_{kf_fid}")
@@ -427,6 +443,10 @@ class Renderer:
         
         # Update point cloud
         self._update_point_cloud(fid)
+        
+        # Update segmentation bounding boxes
+        if self.render_bboxes:
+            self._update_instances_bboxes(fid)
 
     def _setup_o3d_renderer(self):
         
@@ -434,7 +454,7 @@ class Renderer:
         
         # Disable color correction/gamma correction by setting background to white
         # and disabling post-processing
-        self.o3d_renderer.scene.set_background([1, 1, 1, 1])  # White background
+        self.o3d_renderer.scene.set_background([1.0, 1.0, 1.0, 1.0])  #  0.75
         
         # Access the View instance via the scene object
         view_instance = self.o3d_renderer.scene.view 
@@ -470,12 +490,12 @@ class Renderer:
     def _init_grid_xz(self):
         assert self.o3d_renderer is not None, "Renderer not initialized."
 
-        grid = create_grid(size=100.0, n=100, plane='xz', height=0.0)
+        grid = create_grid(size=75.0, n=75, plane='xz', height=2.0)
         grid_material = MaterialRecord()
         grid_material.shader = "unlitLine"
-        grid_material.line_width = 0.5
-        # make transparent
-        # grid_material.base_color = [0.5, 0.5, 0.5, 0.0]
+        grid_material.line_width = 0.25
+        # set color
+        grid.paint_uniform_color([0.2, 0.2, 0.2])
         self.o3d_renderer.scene.add_geometry("grid", grid, grid_material)
     
     def _init_keyframes(self):
@@ -508,7 +528,7 @@ class Renderer:
                 K=self.K,
                 pose_c2w=pose_c2w
             )
-            self.o3d_renderer.scene.add_geometry(f"{self.PCD_NAME}_{kf_fid}", pcd, self.material)
+            self.o3d_renderer.scene.add_geometry(f"{self.PCD_NAME}_{kf_fid}", pcd, self.point_material)
     
     def _init_frame(self, fid=0):
 
@@ -526,17 +546,92 @@ class Renderer:
         
         self._update_camera_trajectory(fid)
         
+        # Add segmentation bounding boxes
+        
+        if self.render_bboxes:
+            self._update_instances_bboxes(fid)
+        
         return pcd
     
-    def _update_point_cloud(self, fid):
+    def _remove_instances_bboxes(self, fid):
+        
+        assert self.o3d_renderer is not None, "Renderer not initialized."
+        
+        # Remove bounding box per instance if segmentation is enabled
+        if self.instances_masks is not None and self.unique_instance_ids is not None:
+            instance_ids = self.unique_instance_ids
+            for instance_id in instance_ids:
+                if instance_id == 0:
+                    continue  # Skip background
+                geometry_name = f"{self.PCD_NAME}_aabb_{instance_id}"
+                self.o3d_renderer.scene.remove_geometry(geometry_name)
+    
+    def _update_instances_bboxes(self, fid):
+        
+        assert self.o3d_renderer is not None, "Renderer not initialized."
+        
+        # Remove existing bounding boxes
+        self._remove_instances_bboxes(fid)
+        
+        # Add bounding box per instance if segmentation is enabled
+        if self.instances_masks is not None:
+            
+            # Check if stereo camera
+            if isinstance(self.poses_c2w, tuple):
+                # Use right camera pose
+                pose_c2w = self.poses_c2w[1][fid]
+            else:
+                pose_c2w = self.poses_c2w[fid]
+            
+            # Compute axis-aligned bounding boxes for each instance
+            instance_ids = np.unique(self.instances_masks[fid])
+            rgb = self.instance_colors[self.instances_masks[fid].reshape(-1)].reshape(self.instances_masks[fid].shape[0], self.instances_masks[fid].shape[1], -1)
+            
+            for instance_id in instance_ids:
+                if instance_id == 0:
+                    continue  # Skip background
+                
+                mask = self.instances_masks[fid] == instance_id
+                
+                # Skip if instance has no pixels
+                if not np.any(mask):
+                    continue
+                
+                # Extract points belonging to the instance
+                depth_instance = np.where(mask, self.depths[fid], 0)
+                rgb_instance = np.where(mask[..., None], rgb, 0)
+                pcd_instance = generate_o3d_point_cloud(
+                    rgb=rgb_instance,
+                    depth=depth_instance,
+                    K=self.K,
+                    pose_c2w=pose_c2w
+                )
+                
+                # Skip if point cloud is empty
+                if len(pcd_instance.points) == 0:
+                    continue
+                
+                aabb = pcd_instance.get_axis_aligned_bounding_box()
+                aabb.color = self.instance_colors[instance_id] / 255.0  # Normalize color to [0,1]
+                geometry_name = f"{self.PCD_NAME}_aabb_{instance_id}"
+                self.o3d_renderer.scene.add_geometry(geometry_name, aabb, self.line_material)
+    
+    def _remove_point_cloud(self, fid):
         
         assert self.o3d_renderer is not None, "Renderer not initialized."
         
         # Remove existing point cloud
         self.o3d_renderer.scene.remove_geometry(self.PCD_NAME)
+    
+    def _update_point_cloud(self, fid):
+        
+        assert self.o3d_renderer is not None, "Renderer not initialized."
+        
+        self._remove_point_cloud(fid)
         
         # Add initial point cloud
         if self.render_segmentation and self.instances_masks is not None:
+            # Compute axis-aligned bounding boxes for each instance
             rgb = self.instance_colors[self.instances_masks[fid].reshape(-1)].reshape(self.instances_masks[fid].shape[0], self.instances_masks[fid].shape[1], -1)
         elif self.render_time_color_coded:
             rgb = self.time_color_coding[fid]
@@ -557,7 +652,7 @@ class Renderer:
             K=self.K,
             pose_c2w=pose_c2w
         )
-        self.o3d_renderer.scene.add_geometry(self.PCD_NAME, pcd, self.material)
+        self.o3d_renderer.scene.add_geometry(self.PCD_NAME, pcd, self.point_material)
         
         return pcd
     
@@ -585,12 +680,8 @@ class Renderer:
         # filter out poses after current fid
         poses_c2w = poses_c2w[:fid+1]
         
-        trajectory = create_camera_trajectory(poses_c2w, color=[0, 0.5, 1])
-        
-        traj_material = MaterialRecord()
-        traj_material.shader = "unlitLine"
-        traj_material.line_width = 2.0
-        self.o3d_renderer.scene.add_geometry(self.CAMERA_TRAJECTORY_NAME, trajectory, traj_material)
+        trajectory = create_camera_trajectory(poses_c2w, color=[1, 0, 1])
+        self.o3d_renderer.scene.add_geometry(self.CAMERA_TRAJECTORY_NAME, trajectory, self.line_material)
         
     def _update_tracks_3d(self, fid):
         
@@ -626,11 +717,8 @@ class Renderer:
             blue_color = [0, 0.5, 1]
             frustum_left = create_camera_frustum(pose_c2w_left, self.K, color=orange_color)
             frustum_right = create_camera_frustum(pose_c2w_right, self.K, color=blue_color)
-            frustum_material = MaterialRecord()
-            frustum_material.shader = "unlitLine"
-            frustum_material.line_width = 2.0
-            self.o3d_renderer.scene.add_geometry(f"{self.CAMERA_FRUSTUM_NAME}_left", frustum_left, frustum_material)
-            self.o3d_renderer.scene.add_geometry(f"{self.CAMERA_FRUSTUM_NAME}_right", frustum_right, frustum_material)        
+            self.o3d_renderer.scene.add_geometry(f"{self.CAMERA_FRUSTUM_NAME}_left", frustum_left, self.line_material)
+            self.o3d_renderer.scene.add_geometry(f"{self.CAMERA_FRUSTUM_NAME}_right", frustum_right, self.line_material)        
         
         else:
             
@@ -640,10 +728,7 @@ class Renderer:
             # Add single camera frustum if not stereo
             pose_c2w = self.poses_c2w[fid]
             frustum = create_camera_frustum(pose_c2w, self.K)
-            frustum_material = MaterialRecord()
-            frustum_material.shader = "unlitLine"
-            frustum_material.line_width = 2.0
-            self.o3d_renderer.scene.add_geometry(self.CAMERA_FRUSTUM_NAME, frustum, frustum_material)
+            self.o3d_renderer.scene.add_geometry(self.CAMERA_FRUSTUM_NAME, frustum, self.line_material)
     
 class OnlineRendererApp(Renderer):
     def __init__(self, rgbs, depths, K, poses_c2w, tracks3d=None, instances_masks=None, max_tracks=3000):
@@ -738,6 +823,11 @@ class OnlineRendererApp(Renderer):
         self.show_segmentation_checkbox.checked = self.render_segmentation
         self.show_segmentation_checkbox.set_on_checked(self._on_show_segmentation_toggled)
         self.layout.add_child(self.show_segmentation_checkbox)
+        
+        self.show_bboxes_checkbox = gui.Checkbox("Bounding Boxes")
+        self.show_bboxes_checkbox.checked = self.render_bboxes
+        self.show_bboxes_checkbox.set_on_checked(self._on_show_bboxes_toggled)
+        self.layout.add_child(self.show_bboxes_checkbox)
         
         self._on_show_time_color_coded_toggled(self.render_time_color_coded)
         self.show_time_color_coded_checkbox = gui.Checkbox("Time Color Coded")
@@ -834,11 +924,22 @@ class OnlineRendererApp(Renderer):
         # Update geometry to reflect change
         if self.render_keyframes:
             # Clean scene from keyframes
-            keyframes_fids = list(range(0, len(self.rgbs), self.keyframes_interval))
-            for kf_fid in keyframes_fids:
-                self.o3d_renderer.scene.remove_geometry(f"{self.PCD_NAME}_{kf_fid}")
+            self._clean_keyframes_from_scene()
             # Re-init keyframe rendering
             self._init_keyframes()
+        else:
+            self._update_geometry(self.state['fid'])
+            
+    def _on_show_bboxes_toggled(self, is_checked):
+        """Handle toggling of bounding boxes visibility."""
+        self.render_bboxes = is_checked
+        
+        # Remove existing bounding boxes
+        self._remove_instances_bboxes(self.state['fid'])
+        
+        # Update geometry to reflect change
+        if self.render_keyframes:
+            pass
         else:
             self._update_geometry(self.state['fid'])
         
@@ -850,14 +951,13 @@ class OnlineRendererApp(Renderer):
         if self.render_keyframes:
             # Clean scene
             self.o3d_renderer.scene.remove_geometry(self.TRACK_LINES_NAME)
-            self.o3d_renderer.scene.remove_geometry(self.PCD_NAME)
+            self._remove_instances_bboxes(self.state['fid'])
+            self._remove_point_cloud(self.state['fid'])
             # Init keyframes
             self._init_keyframes()  # init keyframe rendering
         else:
             # Clean scene from keyframes
-            keyframes_fids = list(range(0, len(self.rgbs), self.keyframes_interval))
-            for kf_fid in keyframes_fids:
-                self.o3d_renderer.scene.remove_geometry(f"{self.PCD_NAME}_{kf_fid}")
+            self._clean_keyframes_from_scene()
             # Re-init single frame rendering
             self._init_frame(fid=self.state['fid'])  # re-init single frame rendering
             self._update_geometry(self.state['fid'])
@@ -971,28 +1071,31 @@ class OffscreenRendererApp(Renderer):
         
         # Calculate the view matrix (world-to-camera) from the camera-to-world pose
         # We want a view that encompasses the scene, typically centered on the point cloud.
-        bounds = initial_pcd.get_axis_aligned_bounding_box()
+        # bounds = initial_pcd.get_axis_aligned_bounding_box()
         # self.scene_center = bounds.get_center()
-        self.scene_center = np.array([0.0, 0.0, 3.0])
+        
         
         # Determine a suitable camera position (eye) and up vector
         # This example places the viewer camera (eye) slightly above and behind the scene
         # to get a good overview, looking towards the center.
         
         # Estimate the size of the scene to position the camera far enough away
-        scene_size = np.linalg.norm(bounds.get_max_bound() - bounds.get_min_bound())
+        # scene_size = np.linalg.norm(bounds.get_max_bound() - bounds.get_min_bound())
         # self.camera_distance = scene_size * 1.0
         self.camera_distance = 8.0
         
         # Position the eye (viewer camera) relative to the center
         # Example: Looking down and slightly in front (positive Z, positive Y)
-        eye = self.scene_center + np.array([self.camera_distance * 0.5, -self.camera_distance * 0.5, -self.camera_distance * 0.5])
+        # eye = self.scene_center + np.array([self.camera_distance * 0.5, -self.camera_distance * 0.5, -self.camera_distance * 0.5])
+        look_at = np.array([0.0, 0.0, 6.0])
+        origin = np.array([0.0, 0.0, 0.0])
+        eye = origin + np.array([2, -2, -2])  # Fixed position for better view
         self.up = np.array([0, 1, 0]) # Standard Up vector for world coordinates
 
         # Set the camera view using OffscreenRenderer's supported overload 1
         self.o3d_renderer.setup_camera(
             60.0,    # vertical_field_of_view (e.g., 60 degrees)
-            self.scene_center,  # The point the camera looks at
+            look_at,  # The point the camera looks at
             eye,     # The position of the camera
             self.up       # The vector defining 'up' for the camera
         )
@@ -1012,91 +1115,25 @@ def run_open3d_offline_renderer(
     K[0, :] *= width
     K[1, :] *= height
     
-    app = OffscreenRendererApp(512, 512, rgbs, depths, K, poses_c2w, tracks3d, instances_masks)
-    
-    # 
-    app.render_keyframes = False
-    app.render_segmentation = False
-    app.render_tracks = False
-    app.render_time_color_coded = False
+    # Reduced resolution for faster rendering
+    base_res = 512
+    res_scale = 1
+    res = base_res * res_scale
+    app = OffscreenRendererApp(res, res, rgbs, depths, K, poses_c2w, tracks3d, instances_masks)
     
     def render_image():
         # Render the image
         image = app.o3d_renderer.render_to_image()
-        # Convert to numpy array
+        # Convert to numpy array and process in one go
         image = np.asarray(image)
-        # Flip image vertically
-        image = np.flipud(image)
-        # Flip image horizontally
-        image = np.fliplr(image)
+        # Combined flip operation (more efficient than two separate flips)
+        image = np.flipud(np.fliplr(image))
         # sRGB to linear color space conversion
         image = utils.srgb_to_linear(image)
+        # Only resize if needed
+        if res != 512:
+            image = cv2.resize(image, (512, 512), interpolation=cv2.INTER_LINEAR)
         return image
-    
-    # Init output frames list
-    frames = []
-    
-    nr_frames = rgbs.shape[0]
-    for fid in tqdm(range(nr_frames), desc="Rendering RGB"):
-    
-        # Generate the point cloud for the specified frame index (fid)
-        app._update_geometry(fid)
-
-        # Render the image
-        image = render_image()
-        
-        # concat original rgb to the left of the rendered image
-        original_rgb = rgbs[fid]
-        combined_image = np.concatenate((original_rgb, image), axis=1)
-        
-        frames.append(combined_image)
-        
-    rgb_frames = np.array(frames)  # Convert list to numpy array (T, H, W, 3)
-    
-    if instances_masks is None:
-        
-        black_frame = np.zeros_like(rgb_frames)  # (T, H, W, 3)
-        final_frames = np.concatenate((rgb_frames, black_frame), axis=1)  # (T, H*2, W, 3)
-    
-    else:
-        # render segmentation frames
-        
-        frames = []
-        
-        # 
-        app.render_keyframes = False
-        app.render_segmentation = True
-        app.render_tracks = False
-        app.render_time_color_coded = False
-        
-        for fid in tqdm(range(nr_frames), desc="Rendering Segmentation"):
-        
-            # Generate the point cloud for the specified frame index (fid)
-            app._update_geometry(fid)
-
-            # Render the image
-            image = app.o3d_renderer.render_to_image()
-            
-            # Convert to numpy array
-            image = np.asarray(image)
-            
-            # Flip image vertically
-            image = np.flipud(image)
-            
-            # Flip image horizontally
-            image = np.fliplr(image)
-            
-            # sRGB to linear color space conversion
-            image = utils.srgb_to_linear(image)
-            
-            # concat segmentation image to the left of the rendered image
-            segmentation_rgb = app.instance_colors[instances_masks[fid].reshape(-1)].reshape(instances_masks[fid].shape[0], instances_masks[fid].shape[1], -1)
-            combined_image = np.concatenate((segmentation_rgb, image), axis=1)
-            
-            frames.append(combined_image)
-            
-        segm_frames = np.array(frames)  # Convert list to numpy array (T, H, W, 3)
-        final_frames = np.concatenate((rgb_frames, segm_frames), axis=1)  # (T, H*2, W, 3)
     
     # render keyframes (only once)
     
@@ -1108,11 +1145,12 @@ def run_open3d_offline_renderer(
     app.render_segmentation = False
     app.render_tracks = False
     app.render_time_color_coded = False
+    app.render_bboxes = False
+    
     app._clean_keyframes_from_scene()
     app._init_keyframes()
     
     keyframe_image = render_image()
-    keyframe_image = np.asarray(keyframe_image)  # (H, W, 3)
     
     # render keyframes (time color coded, only once)
     
@@ -1120,17 +1158,75 @@ def run_open3d_offline_renderer(
     app.render_segmentation = False
     app.render_tracks = False
     app.render_time_color_coded = True
+    app.render_bboxes = False
+    
     app._clean_keyframes_from_scene()
     app._init_keyframes()
     
     keyframe_time_color_coded_image = render_image()
-    keyframe_time_color_coded_image = np.asarray(keyframe_time_color_coded_image)  # (H, W, 3)
     
     # concat keyframes renders vertically
     keyframe_frames = np.concatenate((keyframe_image, keyframe_time_color_coded_image), axis=0)  # (H*2, W, 3)
     
-    # concat to all frames horizontally
-    final_frames = np.concatenate((final_frames, keyframe_frames[None, :, :, :].repeat(nr_frames, axis=0)), axis=2)  # (T, H*2, W*2, 3)
+    app._clean_keyframes_from_scene()
+    
+    # 
+    app.render_keyframes = False
+    app.render_segmentation = False
+    app.render_tracks = False
+    app.render_time_color_coded = False
+    app.render_bboxes = False
+    
+    nr_frames = rgbs.shape[0]
+    
+    # Preallocate arrays for better performance
+    rgb_frames = np.empty((nr_frames, 512, 1024, 3), dtype=rgbs.dtype)
+    
+    for fid in tqdm(range(nr_frames), desc="Rendering RGB"):
+        # Generate the point cloud for the specified frame index (fid)
+        app._update_geometry(fid)
+        
+        # Render the image
+        image = render_image()
+        
+        # concat original rgb to the left of the rendered image (in-place)
+        rgb_frames[fid, :, :512, :] = rgbs[fid]
+        rgb_frames[fid, :, 512:, :] = image
+    
+    # render segmentation frames
+    app.render_keyframes = False
+    app.render_segmentation = True
+    app.render_tracks = False
+    app.render_time_color_coded = False
+    app.render_bboxes = True
+    
+    # Preallocate segmentation frames
+    segm_frames = np.empty((nr_frames, 512, 1024, 3), dtype=rgbs.dtype)
+    
+    # Precompute segmentation RGB for all frames to avoid repeated reshaping
+    if instances_masks is not None:
+        segmentation_rgbs = app.instance_colors[instances_masks.reshape(nr_frames, -1)]
+        segmentation_rgbs = segmentation_rgbs.reshape(nr_frames, instances_masks.shape[1], instances_masks.shape[2], -1)
+    else:
+        segmentation_rgbs = np.zeros((nr_frames, 512, 512, 3), dtype=rgbs.dtype)
+    
+    for fid in tqdm(range(nr_frames), desc="Rendering Segmentation"):
+        # Generate the point cloud for the specified frame index (fid)
+        app._update_geometry(fid)
+        
+        # Render the image
+        image = render_image()
+        
+        # concat segmentation image to the left of the rendered image (in-place)
+        segm_frames[fid, :, :512, :] = segmentation_rgbs[fid]
+        segm_frames[fid, :, 512:, :] = image
+    
+    # Combine all frames efficiently
+    final_frames = np.concatenate((rgb_frames, segm_frames), axis=1)  # (T, H*2, W, 3)
+    
+    # Broadcast keyframe_frames efficiently
+    keyframe_broadcast = np.broadcast_to(keyframe_frames[None, :, :, :], (nr_frames, *keyframe_frames.shape))
+    final_frames = np.concatenate((final_frames, keyframe_broadcast), axis=2)  # (T, H*2, W*2, 3)
     
     print("Rendered frames shape:", final_frames.shape)
     

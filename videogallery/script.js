@@ -1,4 +1,4 @@
-const nr_videos_to_load = 100;
+const nr_videos_to_load = -1;
 const VIDEOS_PER_PAGE = 50;
 
 // API base URL - change this if running server on different host/port
@@ -446,7 +446,9 @@ loadDatabase().then(() => {
             });
             
             // limit list to first N videos for performance
-            videoFiles = videoFiles.slice(0, nr_videos_to_load);
+            if (nr_videos_to_load > 0) {
+                videoFiles = videoFiles.slice(0, nr_videos_to_load);
+            }
             
             // Populate class filter dropdown with unique classes from loaded videos
             populateClassFilter();

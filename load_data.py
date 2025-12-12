@@ -8,7 +8,7 @@ import utils
 from tqdm import tqdm
 
 MIN_DEPTH = 0.1
-MAX_DEPTH = 20.0
+# MAX_DEPTH = 20.0
 
 
 def load_data(root_dir: str, split:str, scene:str, timestamp:str):
@@ -195,7 +195,10 @@ def load_data(root_dir: str, split:str, scene:str, timestamp:str):
     # stack extrs
     input_dict['left']['camera'] = np.stack(input_dict['left']['camera'], axis=0)
     input_dict['right']['camera'] = np.stack(input_dict['right']['camera'], axis=0)
-        
+    
+    # max depth is any depth larger than <1 disparity
+    MAX_DEPTH = baseline * (intr_normalized['fx'] * width) / 1.0
+    
     depths = np.stack(depths, axis=0)
     depths[depths > MAX_DEPTH] = 0
     depths[depths <= MIN_DEPTH] = 0

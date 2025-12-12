@@ -10,3 +10,4 @@ data/*
 tracks2d/*
 slurm_jobs/*
 videogallery/videos/*
+baselines/trace_anything/outputs/*
