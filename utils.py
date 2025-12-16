@@ -75,7 +75,12 @@ def create_video_from_frames(
         print(f"MoviePy error: {e}")
         return
 
-def generate_point_cloud(rgb, depth, K, pose_c2w):
+def generate_point_cloud(rgb, depth, K, pose_c2w, instances=None):
+    
+    assert rgb.shape[:2] == depth.shape[:2], "RGB and depth image must have the same resolution."
+    
+    if instances is not None:
+        assert instances.shape[:2] == depth.shape[:2], "Instance mask resolution mismatch."
     
     xyz, scales = depth2xyz(depth, K)
     rgb = rgb.reshape(-1, 3)
@@ -90,40 +95,14 @@ def generate_point_cloud(rgb, depth, K, pose_c2w):
     rgb = rgb[mask]
     scales = scales[mask]
     
-    return xyz, rgb, scales
-
-
-def srgb_to_linear(srgb_img_u8: np.ndarray) -> np.ndarray:
-    """
-    Converts an sRGB image (numpy array, uint8 in [0, 255]) to a linear 
-    color space image (numpy array, float32 in [0.0, 1.0]).
-    """
-    # 1. Normalize to [0, 1] and convert to float32
-    srgb_normalized = srgb_img_u8.astype(np.float32) / 255.0
-
-    # 2. Apply the sRGB to Linear conversion formula
+    pcd = {'xyz': xyz, 'rgb': rgb, 'scales': scales}
     
-    # Define the linear and power functions
-    # For S <= 0.04045, Linear = S / 12.92
-    # For S > 0.04045, Linear = ((S + 0.055) / 1.055)**2.4
+    if instances is not None:
+        instances = instances.reshape(-1)  # (H*W,)
+        instances = instances[mask]
+        pcd['inst_id'] = instances
     
-    # Create a mask for the linear part of the function
-    mask = srgb_normalized <= 0.04045
-    
-    # Initialize the linear image array
-    linear_img = np.empty_like(srgb_normalized, dtype=np.float32)
-    
-    # Apply the linear part
-    linear_img[mask] = srgb_normalized[mask] / 12.92
-    
-    # Apply the power part
-    s_pow = srgb_normalized[~mask]
-    linear_img[~mask] = np.power((s_pow + 0.055) / 1.055, 2.4)
-    
-    # Convert back to u8
-    linear_img = (linear_img * 255.0).astype(np.uint8)
-
-    return linear_img
+    return pcd
 
 
 def sample_depth_from_2d_points(points2d, depth_map):

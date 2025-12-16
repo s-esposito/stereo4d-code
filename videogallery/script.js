@@ -140,6 +140,11 @@ function hasTag(fileName, tag) {
     return database[fileName] && database[fileName].tags.includes(tag);
 }
 
+function hasNoTags(fileName) {
+    // Check if tags array exists and is empty
+    return database[fileName].tags && database[fileName].tags.length === 0;
+}
+
 // videos are listed in videos.csv file in the same folder as this HTML file
 // read the file and create an array of video file names
 let videoFiles = [];
@@ -150,6 +155,9 @@ let currentSearchQuery = ''; // Current search query
 
 // Filter videos based on selected tag, classes, and search query
 function filterVideos(tagFilter = null, classFilters = null, searchQuery = null, resetPage = true) {
+    
+    console.log("Applying filters - Tag:", tagFilter, "Classes:", classFilters, "Search:", searchQuery);
+    
     if (tagFilter !== null) currentTagFilter = tagFilter;
     if (classFilters !== null) currentClassFilters = classFilters;
     if (searchQuery !== null) currentSearchQuery = searchQuery;
@@ -174,7 +182,11 @@ function filterVideos(tagFilter = null, classFilters = null, searchQuery = null,
     // Apply tag filter
     if (currentTagFilter !== 'all') {
         filteredFiles = filteredFiles.filter(fileName => {
-            return hasTag(fileName, currentTagFilter);
+            if (currentTagFilter === 'uncategorized') {
+                return hasNoTags(fileName);
+            } else {
+                return hasTag(fileName, currentTagFilter);
+            }
         });
     }
     
@@ -568,7 +580,7 @@ function loadVideos(videoFiles) {
         const sourceElement = document.createElement('source');
         // Add .mp4 extension since CSV stores filenames without extension
         let videoPath = videoFolder + fileName + '.mp4';
-        console.log("Loading video from path:", videoPath);
+        // console.log("Loading video from path:", videoPath);
         sourceElement.src = videoPath;
         sourceElement.type = 'video/mp4'; // Explicitly state the type
 
@@ -610,10 +622,20 @@ function loadVideos(videoFiles) {
         copyButton.title = "Copy visualization script";
         copyButton.onclick = () => {
             const script = `python view_sample.py --view --scene=${scene} --timestamp=${timestamp}`;
-            navigator.clipboard.writeText(script);
-            // .then(() => {
-            //     alert('Visualization script copied to clipboard!');
-            // });
+            navigator.clipboard.writeText(script)
+                .then(() => {
+                    // Visual feedback - change icon briefly
+                    const originalHTML = copyButton.innerHTML;
+                    copyButton.innerHTML = "✓";
+                    setTimeout(() => {
+                        copyButton.innerHTML = originalHTML;
+                    }, 1000);
+                })
+                .catch(err => {
+                    console.error('Failed to copy:', err);
+                    // Fallback: show alert with the command to copy manually
+                    alert(`Copy this command:\n${script}`);
+                });
         };
         // add class to button
         copyButton.classList.add('video-button');
@@ -652,11 +674,6 @@ function loadVideos(videoFiles) {
                 allGoodButton.classList.add('active');
                 videoContainer.classList.add('tagged-all-good');
             }
-            
-            // Refresh filter if needed
-            if (currentTagFilter !== 'all' || !currentClassFilters.includes('all') || currentSearchQuery !== '') {
-                setTimeout(() => filterVideos(), 100);
-            }
         };
 
         // add an "all wrong" button
@@ -693,11 +710,6 @@ function loadVideos(videoFiles) {
                 allWrongButton.classList.add('active');
                 videoContainer.classList.add('tagged-all-wrong');
             }
-            
-            // Refresh filter if needed
-            if (currentTagFilter !== 'all' || !currentClassFilters.includes('all') || currentSearchQuery !== '') {
-                setTimeout(() => filterVideos(), 100);
-            }
         };
 
         // add a "warning" button
@@ -733,11 +745,6 @@ function loadVideos(videoFiles) {
                 updateVideoTag(fileName, 'warning'); // Add the tag
                 warningButton.classList.add('active');
                 videoContainer.classList.add('tagged-warning');
-            }
-            
-            // Refresh filter if needed
-            if (currentTagFilter !== 'all' || !currentClassFilters.includes('all') || currentSearchQuery !== '') {
-                setTimeout(() => filterVideos(), 100);
             }
         };
 

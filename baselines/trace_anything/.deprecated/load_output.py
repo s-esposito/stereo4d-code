@@ -1,75 +1,8 @@
 import torch
 import matplotlib.pyplot as plt
 import numpy as np
-import ta_utils
+import baselines.trace_anything.utils as utils
 
-    
-def load_output(filepath):
-    # preds[i]['ctrl_pts3d'] — 3D control points, shape [K, H, W, 3]
-    # preds[i]['ctrl_conf'] — confidence maps, shape [K, H, W]
-    # preds[i]['fg_mask'] — binary mask [H, W], computed via Otsu thresholding on control-point variance.
-    # preds[i]['time'] — predicted scalar time ∈ [0, 1).
-    # views[i]['img'] — normalized input image tensor ∈ [-1, 1]
-
-    output = torch.load(filepath, map_location=torch.device('cpu'), weights_only=True)
-    print(f"Loaded output from {filepath}")
-    preds: list = output["preds"]
-    views: list = output["views"]
-    
-    pred = preds[0]
-    view = views[0]
-    
-    time = pred['time'].item()
-    print(f"Predicted time: {time:.4f}")
-    
-    img = view['img']  # normalized image tensor ∈ [-1, 1]
-    print(f"Input image tensor shape: {img.shape}")
-    
-    fg_mask = pred['fg_mask']  # binary mask [H, W]
-    print(f"Foreground mask shape: {fg_mask.shape}")
-    
-    ctrl_conf = pred['ctrl_conf']  # confidence maps, shape [K, H, W]
-    print(f"Control point confidence maps shape: {ctrl_conf.shape}")
-    
-    ctrl_pts3d = pred['ctrl_pts3d']  # 3D control points, shape [K, H, W, 3]
-    print(f"3D control points shape: {ctrl_pts3d.shape}")
-    
-    # view_img = view['img']  # normalized input image tensor ∈ [-1, 1]
-    # print(f"View image tensor shape: {view_img.shape}")  # (1, 3, H, W)
-    # same as img
-    
-    time_step = view['time_step']  # 
-    print(f"View time step: {time_step}")
-    
-    # # visualize img
-    # img_np = ((img.squeeze(0).permute(1, 2, 0).numpy() + 1) / 2.0 * 255).astype(np.uint8)
-    # plt.imshow(img_np)
-    # plt.title("Input Image")
-    # plt.axis('off')
-    # plt.show()
-    
-    # # visualize fg_mask
-    # plt.imshow(fg_mask.numpy(), cmap='gray')
-    # plt.title("Foreground Mask")
-    # plt.axis('off')
-    # plt.show()
-    
-    # # visualize view_img
-    # img_np = ((view_img.squeeze(0).permute(1, 2, 0).numpy() + 1) / 2.0 * 255).astype(np.uint8)
-    # plt.imshow(img_np)
-    # plt.title(f"Input Image at time step {time_step}")
-    # plt.axis('off')
-    # plt.show()
-    
-    t_step = 0.1
-    ds = 2
-    t_vals, frames, fg_conf_all_t, bg_conf_all_flat, times = ta_utils.build_precomputes(output, t_step, ds)
-    # nearest_idx = ta_utils.choose_nearest_frame_indices(times, t_vals)
-    
-    # Visualize point clouds using Open3D
-    visualize_point_clouds_interactive(t_vals, frames)
-    
-    return output
 
 def visualize_point_clouds_interactive(t_vals, frames):
     """
@@ -311,5 +244,5 @@ def visualize_point_clouds_interactive(t_vals, frames):
 if __name__ == "__main__":
     
     # filepath = "/home/stefano/Codebase/stereo4d-code/baselines/trace_anything/outputs/H5xOyNqJkPs_38738739-right_rectified/output.pt"
-    filepath = "/home/stefano/Codebase/stereo4d-code/baselines/trace_anything/outputs/elephant/output.pt"
-    preds = load_output(filepath)
+    filepath = "/home/stefano/Codebase/stereo4d-code/baselines/trace_anything/outputs/H5xOyNqJkPs_38738739-right_rectified/output.pt"
+    preds = utils.load_output(filepath)

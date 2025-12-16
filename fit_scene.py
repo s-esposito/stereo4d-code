@@ -84,7 +84,10 @@ if __name__ == "__main__":
     depths = train_dict['depths']
     extrs_left = train_dict['left']['camera']
     extrs_right = train_dict['right']['camera']
-    xyz, rgb, scales = utils.generate_point_cloud(rgbs_right[0], depths[0], K, extrs_right[0])
+    pcd = utils.generate_point_cloud(rgbs_right[0], depths[0], K, extrs_right[0])
+    rgb = pcd['rgb']
+    xyz = pcd['xyz']
+    scales = pcd['scales']
     rgb = rgb / 255.0  # normalize to [0, 1]
     print("Point cloud shape:", xyz.shape, rgb.shape)
     print("rgb min/max:", np.min(rgb), np.max(rgb))

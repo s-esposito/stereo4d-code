@@ -287,17 +287,20 @@ def create_track_lines(tracks3d, tracks_colors, current_frame, trail_length=10):
     
     return line_set
 
-def generate_o3d_point_cloud(rgb, depth, K, pose_c2w):
-    """
-    Generates a dummy point cloud that changes only its position and color 
-    with the frame index (fid), maintaining a consistent scale.
-    """
+# def generate_o3d_point_cloud(rgb, depth, K, pose_c2w):
+#     """
+#     Generates a dummy point cloud that changes only its position and color 
+#     with the frame index (fid), maintaining a consistent scale.
+#     """
     
-    xyz, rgb, _ = utils.generate_point_cloud(rgb, depth, K, pose_c2w)
+#     pcd = utils.generate_point_cloud(rgb, depth, K, pose_c2w)
+#     rgb = pcd['rgb']
+#     xyz = pcd['xyz']
+#     scales = pcd['scales']
     
-    # Create the Open3D point cloud object
-    pcd = toOpen3dCloud(xyz, rgb)
-    return pcd
+#     # Create the Open3D point cloud object
+#     pcd = toOpen3dCloud(xyz, rgb)
+#     return pcd
 
 def compute_tracks_colors(tracks3d):
 
@@ -340,7 +343,7 @@ def compute_instances_colors(instances_masks):
     return instance_colors
 
 class Renderer:
-    def __init__(self, rgbs, depths, K, poses_c2w, tracks3d=None, instances_masks=None, max_tracks=3000):
+    def __init__(self, nr_frames: int, rgbs=None, depths=None, point_clouds=None, K=None, poses_c2w=None, tracks3d=None, instances_masks=None, max_tracks=3000):
         
         # Rendering flags
         self.render_tracks = False
@@ -351,19 +354,21 @@ class Renderer:
         
         # Initialize State
         self.state = {'fid': 0}
+        self.nr_frames = nr_frames
         self.rgbs = rgbs  # (T, H, W, 3)
         self.depths = depths  # (T, H, W)
+        self.point_clouds = point_clouds  # List of point clouds
         self.K = K
         self.poses_c2w = poses_c2w  # (T, 4, 4) or tuple of two (T, 4, 4)
         self.tracks3d = tracks3d  # (N, T, 3) or None
         self.instances_masks = instances_masks  # (T, H, W) or None
         self.nr_keyframes = 10
-        self.keyframes_interval = max(10, len(rgbs) // self.nr_keyframes)  # one every 
+        self.keyframes_interval = max(10, self.nr_frames // self.nr_keyframes)  # one every 
         
         # Precompute time color coding (one rgb per frame, turbo colormap)
-        cmap = matplotlib.cm.get_cmap('turbo', len(rgbs))
+        cmap = matplotlib.cm.get_cmap('turbo', self.nr_frames)
         # Generate normalized values from 0 to 1
-        time_values = np.linspace(0, 1, len(rgbs))
+        time_values = np.linspace(0, 1, self.nr_frames)
         # Get RGB values (shape: (N, 4) with RGBA)
         self.time_color_coding = (cmap(time_values)[:, :3] * 255.0).astype(np.uint8)
         
@@ -408,7 +413,7 @@ class Renderer:
         
         assert self.o3d_renderer is not None, "Renderer not initialized."
         
-        keyframes_fids = list(range(0, len(self.rgbs), self.keyframes_interval))
+        keyframes_fids = list(range(0, self.nr_frames, self.keyframes_interval))
         for kf_fid in keyframes_fids:
             self.o3d_renderer.scene.remove_geometry(f"{self.PCD_NAME}_{kf_fid}")
     
@@ -417,7 +422,7 @@ class Renderer:
         
         assert self.o3d_renderer is not None, "Renderer not initialized."
         
-        if fid < 0 or fid >= len(self.rgbs):
+        if fid < 0 or fid >= self.nr_frames:
             return
 
         self.state['fid'] = fid
@@ -430,7 +435,7 @@ class Renderer:
 
         # Update track visualizations
         
-        if self.tracks3d is not None and self.render_tracks:
+        if self.render_tracks:
             # Update track lines
             self._update_tracks_3d(fid)
         else:
@@ -443,7 +448,7 @@ class Renderer:
         
         # Update point cloud
         self._update_point_cloud(fid)
-        
+    
         # Update segmentation bounding boxes
         if self.render_bboxes:
             self._update_instances_bboxes(fid)
@@ -501,33 +506,29 @@ class Renderer:
     def _init_keyframes(self):
         
         assert self.o3d_renderer is not None, "Renderer not initialized."
+        
+        if self.point_clouds is None:
+            return
 
         # Add keyframes point clouds
-        keyframes_fids = list(range(0, len(self.rgbs), self.keyframes_interval))
+        keyframes_fids = list(range(0, self.nr_frames, self.keyframes_interval))
         for kf_fid in keyframes_fids:
-        
+
+            pcd = self.point_clouds[kf_fid]
+            rgb = pcd['rgb']
+            xyz = pcd['xyz']
+            
             # Add initial point cloud
             if self.render_segmentation and self.instances_masks is not None:
-                rgb = self.instance_colors[self.instances_masks[kf_fid].reshape(-1)].reshape(self.instances_masks[kf_fid].shape[0], self.instances_masks[kf_fid].shape[1], -1)
+                # rgb = self.instance_colors[self.instances_masks[kf_fid].reshape(-1)].reshape(self.instances_masks[kf_fid].shape[0], self.instances_masks[kf_fid].shape[1], -1)
+                rgb = self.instance_colors[pcd['inst_id']]
             elif self.render_time_color_coded:
-                rgb = self.time_color_coding[kf_fid]
-                rgb = np.tile(rgb.reshape(1, 1, 3), (self.depths[kf_fid].shape[0], self.depths[kf_fid].shape[1], 1))  # broadcast to image size
-            else:
-                rgb = self.rgbs[kf_fid]
-            
-            # Check if stereo camera
-            if isinstance(self.poses_c2w, tuple):
-                # Use right camera pose
-                pose_c2w = self.poses_c2w[1][kf_fid]
-            else:
-                pose_c2w = self.poses_c2w[kf_fid]
+                rgb = self.time_color_coding[kf_fid]  # (3)
+                # reshape to (N, 3)
+                rgb = np.tile(rgb.reshape(1, 3), (xyz.shape[0], 1))
                 
-            pcd = generate_o3d_point_cloud(
-                rgb=rgb,
-                depth=self.depths[kf_fid],
-                K=self.K,
-                pose_c2w=pose_c2w
-            )
+            # create open3d point cloud
+            pcd = toOpen3dCloud(xyz, rgb)
             self.o3d_renderer.scene.add_geometry(f"{self.PCD_NAME}_{kf_fid}", pcd, self.point_material)
     
     def _init_frame(self, fid=0):
@@ -536,7 +537,7 @@ class Renderer:
         
         # Add current point cloud 
         
-        pcd = self._update_point_cloud(fid)
+        self._update_point_cloud(fid)
         
         # Add current camera frustum
         
@@ -550,10 +551,8 @@ class Renderer:
         
         if self.render_bboxes:
             self._update_instances_bboxes(fid)
-        
-        return pcd
     
-    def _remove_instances_bboxes(self, fid):
+    def _remove_instances_bboxes(self):
         
         assert self.o3d_renderer is not None, "Renderer not initialized."
         
@@ -570,51 +569,64 @@ class Renderer:
         
         assert self.o3d_renderer is not None, "Renderer not initialized."
         
+        if self.instances_masks is None:
+            return
+        
+        if self.point_clouds is None:
+            return
+        
         # Remove existing bounding boxes
-        self._remove_instances_bboxes(fid)
+        self._remove_instances_bboxes()
         
         # Add bounding box per instance if segmentation is enabled
-        if self.instances_masks is not None:
+        
+        # TODO Stefano: avoid unprojecting again, use precomputed point cloud with instance ids
             
-            # Check if stereo camera
-            if isinstance(self.poses_c2w, tuple):
-                # Use right camera pose
-                pose_c2w = self.poses_c2w[1][fid]
-            else:
-                pose_c2w = self.poses_c2w[fid]
+        # Check if stereo camera
+        if isinstance(self.poses_c2w, tuple):
+            # Use right camera pose
+            pose_c2w = self.poses_c2w[1][fid]
+        else:
+            pose_c2w = self.poses_c2w[fid]
+        
+        # Compute axis-aligned bounding boxes for each instance
+        instance_ids = np.unique(self.instances_masks[fid])
+        h, w = self.instances_masks[fid].shape
+        # Get rgb image colored by instance ids
+        rgb = self.instance_colors[self.instances_masks[fid].reshape(-1)].reshape(h, w, -1)
+        
+        for instance_id in instance_ids:
             
-            # Compute axis-aligned bounding boxes for each instance
-            instance_ids = np.unique(self.instances_masks[fid])
-            rgb = self.instance_colors[self.instances_masks[fid].reshape(-1)].reshape(self.instances_masks[fid].shape[0], self.instances_masks[fid].shape[1], -1)
+            if instance_id == 0:
+                continue  # Skip background
             
-            for instance_id in instance_ids:
-                if instance_id == 0:
-                    continue  # Skip background
-                
-                mask = self.instances_masks[fid] == instance_id
-                
-                # Skip if instance has no pixels
-                if not np.any(mask):
-                    continue
-                
-                # Extract points belonging to the instance
-                depth_instance = np.where(mask, self.depths[fid], 0)
-                rgb_instance = np.where(mask[..., None], rgb, 0)
-                pcd_instance = generate_o3d_point_cloud(
-                    rgb=rgb_instance,
-                    depth=depth_instance,
-                    K=self.K,
-                    pose_c2w=pose_c2w
-                )
-                
-                # Skip if point cloud is empty
-                if len(pcd_instance.points) == 0:
-                    continue
-                
-                aabb = pcd_instance.get_axis_aligned_bounding_box()
-                aabb.color = self.instance_colors[instance_id] / 255.0  # Normalize color to [0,1]
-                geometry_name = f"{self.PCD_NAME}_aabb_{instance_id}"
-                self.o3d_renderer.scene.add_geometry(geometry_name, aabb, self.line_material)
+            mask = self.instances_masks[fid] == instance_id
+            
+            # Skip if instance has no pixels
+            if not np.any(mask):
+                continue
+            
+            # Extract points belonging to the instance
+            depth_instance = np.where(mask, self.depths[fid], 0)
+            rgb_instance = np.where(mask[..., None], rgb, 0)
+            # pcd_instance = generate_o3d_point_cloud(
+            #     rgb=rgb_instance,
+            #     depth=depth_instance,
+            #     K=self.K,
+            #     pose_c2w=pose_c2w
+            # )
+            pcd = utils.generate_point_cloud(rgb_instance, depth_instance, self.K, pose_c2w)
+            # Create the Open3D point cloud object
+            pcd_instance = toOpen3dCloud(pcd['xyz'], pcd['rgb'])
+            
+            # Skip if point cloud is empty
+            if len(pcd_instance.points) == 0:
+                continue
+            
+            aabb = pcd_instance.get_axis_aligned_bounding_box()
+            aabb.color = self.instance_colors[instance_id] / 255.0  # Normalize color to [0,1]
+            geometry_name = f"{self.PCD_NAME}_aabb_{instance_id}"
+            self.o3d_renderer.scene.add_geometry(geometry_name, aabb, self.line_material)
     
     def _remove_point_cloud(self, fid):
         
@@ -627,31 +639,25 @@ class Renderer:
         
         assert self.o3d_renderer is not None, "Renderer not initialized."
         
+        if self.point_clouds is None:
+            return
+        
         self._remove_point_cloud(fid)
+        
+        pcd = self.point_clouds[fid]
+        rgb = pcd['rgb']
+        xyz = pcd['xyz']
         
         # Add initial point cloud
         if self.render_segmentation and self.instances_masks is not None:
-            # Compute axis-aligned bounding boxes for each instance
-            rgb = self.instance_colors[self.instances_masks[fid].reshape(-1)].reshape(self.instances_masks[fid].shape[0], self.instances_masks[fid].shape[1], -1)
+            rgb = self.instance_colors[pcd['inst_id']]
         elif self.render_time_color_coded:
-            rgb = self.time_color_coding[fid]
-            rgb = np.tile(rgb.reshape(1, 1, 3), (self.depths[fid].shape[0], self.depths[fid].shape[1], 1))  # broadcast to image size
-        else:
-            rgb = self.rgbs[fid]
+            rgb = self.time_color_coding[fid]  # (3)
+            # reshape to (N, 3)
+            rgb = np.tile(rgb.reshape(1, 3), (xyz.shape[0], 1))
         
-        # Check if stereo camera
-        if isinstance(self.poses_c2w, tuple):
-            # Use right camera pose
-            pose_c2w = self.poses_c2w[1][fid]
-        else:
-            pose_c2w = self.poses_c2w[fid]
-            
-        pcd = generate_o3d_point_cloud(
-            rgb=rgb,
-            depth=self.depths[fid],
-            K=self.K,
-            pose_c2w=pose_c2w
-        )
+        # create open3d point cloud
+        pcd = toOpen3dCloud(xyz, rgb)
         self.o3d_renderer.scene.add_geometry(self.PCD_NAME, pcd, self.point_material)
         
         return pcd
@@ -659,6 +665,9 @@ class Renderer:
     def _update_camera_trajectory(self, fid):
         
         assert self.o3d_renderer is not None, "Renderer not initialized."
+        
+        if self.poses_c2w is None:
+            return
         
         # Remove existing trajectory if any
         self.o3d_renderer.scene.remove_geometry(self.CAMERA_TRAJECTORY_NAME)
@@ -687,6 +696,9 @@ class Renderer:
         
         assert self.o3d_renderer is not None, "Renderer not initialized."
         
+        if self.tracks3d is None:
+            return
+        
         # Remove existing track lines if any
         self.o3d_renderer.scene.remove_geometry(self.TRACK_LINES_NAME)
         
@@ -701,6 +713,12 @@ class Renderer:
     def _update_camera_frustum(self, fid):
         
         assert self.o3d_renderer is not None, "Renderer not initialized."
+        
+        if self.poses_c2w is None:
+            return
+        
+        if self.K is None:
+            return
         
         # Check if stereo camera
         
@@ -731,8 +749,8 @@ class Renderer:
             self.o3d_renderer.scene.add_geometry(self.CAMERA_FRUSTUM_NAME, frustum, self.line_material)
     
 class OnlineRendererApp(Renderer):
-    def __init__(self, rgbs, depths, K, poses_c2w, tracks3d=None, instances_masks=None, max_tracks=3000):
-        super().__init__(rgbs, depths, K, poses_c2w, tracks3d, instances_masks, max_tracks)
+    def __init__(self, nr_frames, rgbs, depths, point_clouds, K, poses_c2w, tracks3d=None, instances_masks=None, max_tracks=3000):
+        super().__init__(nr_frames, rgbs, depths, point_clouds, K, poses_c2w, tracks3d, instances_masks, max_tracks)
         
         self.is_running = True
         self.last_update_time = time.time()
@@ -761,10 +779,21 @@ class OnlineRendererApp(Renderer):
         self._init_grid_xz()
         
         # Init first frame
-        initial_pcd = self._init_frame(fid=0)
+        self._init_frame(fid=0)
         
         # Set Camera View - store bounds and center for camera view switching
-        self.bounds = initial_pcd.get_axis_aligned_bounding_box()
+        if self.point_clouds is not None:
+            initial_pcd = self.point_clouds[0]
+            # to open3d point cloud
+            initial_pcd = toOpen3dCloud(initial_pcd['xyz'], initial_pcd['rgb'])
+            self.bounds = initial_pcd.get_axis_aligned_bounding_box()
+        else:
+            # set bounds to fixed size
+            self.bounds = o3d.geometry.AxisAlignedBoundingBox(
+                min_bound=np.array([-5.0, -5.0, -5.0]),
+                max_bound=np.array([5.0, 5.0, 5.0])
+            )
+            
         self.scene_center = self.bounds.get_center()
         self.o3d_renderer.setup_camera(60, self.bounds, self.scene_center)
         
@@ -801,7 +830,7 @@ class OnlineRendererApp(Renderer):
         self.layout.add_child(frame_label)
         
         self.slider = gui.Slider(gui.Slider.INT)
-        self.slider.set_limits(0, len(self.rgbs) - 1)
+        self.slider.set_limits(0, self.nr_frames - 1)
         self.slider.double_value = 0.0 
         self.slider.set_on_value_changed(self._on_slider_changed)
         self.layout.add_child(self.slider)
@@ -935,7 +964,7 @@ class OnlineRendererApp(Renderer):
         self.render_bboxes = is_checked
         
         # Remove existing bounding boxes
-        self._remove_instances_bboxes(self.state['fid'])
+        self._remove_instances_bboxes()
         
         # Update geometry to reflect change
         if self.render_keyframes:
@@ -951,7 +980,7 @@ class OnlineRendererApp(Renderer):
         if self.render_keyframes:
             # Clean scene
             self.o3d_renderer.scene.remove_geometry(self.TRACK_LINES_NAME)
-            self._remove_instances_bboxes(self.state['fid'])
+            self._remove_instances_bboxes()
             self._remove_point_cloud(self.state['fid'])
             # Init keyframes
             self._init_keyframes()  # init keyframe rendering
@@ -1040,15 +1069,33 @@ def run_open3d_viewer(
     K[0, :] *= width
     K[1, :] *= height
     print("Intrinsic Matrix K:\n", K)
+        
+    point_clouds = []
+    for fid in range(len(rgbs)):
+        # Check if stereo camera
+        if isinstance(poses_c2w, tuple):
+            # Use right camera pose
+            pose_c2w = poses_c2w[1][fid]
+        else:
+            pose_c2w = poses_c2w[fid]
+        
+        rgb = rgbs[fid]
+        depth = depths[fid]
+        instances = instances_masks[fid] if instances_masks is not None else None
+        #
+        pcd = utils.generate_point_cloud(rgb, depth, K, pose_c2w, instances=instances)
+        point_clouds.append(pcd)
+    
+    nr_frames = len(rgbs)
     
     gui.Application.instance.initialize()
-    app = OnlineRendererApp(rgbs, depths, K, poses_c2w, tracks3d, instances_masks)
+    app = OnlineRendererApp(nr_frames, rgbs, depths, point_clouds, K, poses_c2w, tracks3d, instances_masks)
     gui.Application.instance.run()
     
     
 class OffscreenRendererApp(Renderer):
-    def __init__(self, width, height, rgbs, depths, K, poses_c2w, tracks3d=None, instances_masks=None, max_tracks=3000):
-        super().__init__(rgbs, depths, K, poses_c2w, tracks3d, instances_masks, max_tracks)
+    def __init__(self, width, height, nr_frames, rgbs=None, depths=None, point_clouds=None, K=None, poses_c2w=None, tracks3d=None, instances_masks=None, max_tracks=3000):
+        super().__init__(nr_frames, rgbs, depths, point_clouds, K, poses_c2w, tracks3d, instances_masks, max_tracks)
         
         # 
         self.o3d_renderer = OffscreenRenderer(width, height)
@@ -1063,7 +1110,7 @@ class OffscreenRendererApp(Renderer):
         self._init_grid_xz()
         
         # Init first frame
-        initial_pcd = self._init_frame(fid=0)
+        self._init_frame(fid=0)
         
         # Set Camera View
         # bounds = initial_pcd.get_axis_aligned_bounding_box()
@@ -1115,11 +1162,28 @@ def run_open3d_offline_renderer(
     K[0, :] *= width
     K[1, :] *= height
     
+    point_clouds = []
+    for fid in range(len(rgbs)):
+        # Check if stereo camera
+        if isinstance(poses_c2w, tuple):
+            # Use right camera pose
+            pose_c2w = poses_c2w[1][fid]
+        else:
+            pose_c2w = poses_c2w[fid]
+        
+        rgb = rgbs[fid]
+        depth = depths[fid]
+        instances = instances_masks[fid] if instances_masks is not None else None
+        #
+        pcd = utils.generate_point_cloud(rgb, depth, K, pose_c2w, instances=instances)
+        point_clouds.append(pcd)
+    
     # Reduced resolution for faster rendering
+    nr_frames = len(rgbs)
     base_res = 512
     res_scale = 1
     res = base_res * res_scale
-    app = OffscreenRendererApp(res, res, rgbs, depths, K, poses_c2w, tracks3d, instances_masks)
+    app = OffscreenRendererApp(res, res, nr_frames, rgbs, depths, point_clouds, K, poses_c2w, tracks3d, instances_masks)
     
     def render_image():
         # Render the image

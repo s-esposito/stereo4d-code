@@ -19,8 +19,15 @@ Arguments:
 Examples:
     python server.py
     python server.py --port 8080
-    python server.py --host 0.0.0.0 --port 8080
+    python server.py --host 0.0.0.0 --port 8080  # To make it visible to other machines on your local network
     python server.py --backup-interval 10
+    
+ngrok Example:
+# Start server (Terminal 1)
+python server.py --host localhost --port 8080
+
+# Start ngrok with password (Terminal 2)
+ngrok http 8080 --basic-auth "gallery:secure2025"
 
 API Endpoints:
     GET  /api/database          - Get the entire database

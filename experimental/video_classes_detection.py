@@ -5,11 +5,20 @@ import requests
 from io import BytesIO
 import utils
 
-def main(model, processor, root_dir: str, split:str, scene:str, timestamp:str, objs_list: list):
+
+def main(
+    model,
+    processor,
+    root_dir: str,
+    split: str,
+    scene: str,
+    timestamp: str,
+    objs_list: list,
+):
 
     video_path = f"{root_dir}/stereo4d-righteye-perspective/{split}/{scene}_{timestamp}-right_rectified.mp4"
-    
-    # Load video frames     
+
+    # Load video frames
     video_frames, nr_frames = utils.load_video_frames(video_path)
     height, width = video_frames[0].shape[:2]
 
@@ -25,21 +34,21 @@ def main(model, processor, root_dir: str, split:str, scene:str, timestamp:str, o
     #     image = Image.open(BytesIO(response.content))
     # else:
     #     image = Image.open(image_path_or_url)
-    
+
     # Check for objects in video frames
     sample_interval = max(1, nr_frames // 5)  # Sample up to 5 frames
     sampled_indices = range(0, nr_frames, sample_interval)
-    
+
     print(f"\nChecking for objects: {objs_list}")
     print(f"Sampling {len(sampled_indices)} frames from {nr_frames} total frames\n")
-    
+
     # Track which objects are detected in which frames
     object_detections = {obj: [] for obj in objs_list}
-    
+
     for frame_idx in sampled_indices:
         image_path_or_url = video_path
         image = video_frames[frame_idx]
-        
+
         print(f"Frame {frame_idx}/{nr_frames}...", end=" ")
 
         # Prepare vision input
@@ -54,16 +63,11 @@ def main(model, processor, root_dir: str, split:str, scene:str, timestamp:str, o
         ]
 
         text = processor.apply_chat_template(
-            messages,
-            tokenize=False,
-            add_generation_prompt=True
+            messages, tokenize=False, add_generation_prompt=True
         )
 
         inputs = processor(
-            text=[text],
-            images=[image],
-            return_tensors="pt",
-            padding=True
+            text=[text], images=[image], return_tensors="pt", padding=True
         )
 
         inputs = {k: v.to(DEVICE) for k, v in inputs.items()}
@@ -73,14 +77,14 @@ def main(model, processor, root_dir: str, split:str, scene:str, timestamp:str, o
 
         response = processor.decode(outputs[0], skip_special_tokens=True)
         extracted = response.split(detection_prompt)[-1].strip()
-        
+
         if extracted.startswith("assistant"):
-            extracted = extracted[len("assistant"):].strip()
-        
+            extracted = extracted[len("assistant") :].strip()
+
         # Parse detected objects
         detected = extracted.lower().strip()
-        if detected != 'none' and detected != 'none.':
-            detected_objs = [obj.strip() for obj in detected.split(',') if obj.strip()]
+        if detected != "none" and detected != "none.":
+            detected_objs = [obj.strip() for obj in detected.split(",") if obj.strip()]
             # Match detected objects to our list
             for obj in objs_list:
                 if any(obj.lower() in d for d in detected_objs):
@@ -88,54 +92,56 @@ def main(model, processor, root_dir: str, split:str, scene:str, timestamp:str, o
             print(f"Detected: {detected_objs}")
         else:
             print("None detected")
-    
+
     # Print results
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("DETECTION RESULTS")
-    print("="*60)
-    
+    print("=" * 60)
+
     for obj in objs_list:
         frames_detected = object_detections[obj]
         if frames_detected:
             percentage = (len(frames_detected) / len(sampled_indices)) * 100
-            print(f"✓ {obj}: PRESENT (detected in {len(frames_detected)}/{len(sampled_indices)} frames - {percentage:.1f}%)")
+            print(
+                f"✓ {obj}: PRESENT (detected in {len(frames_detected)}/{len(sampled_indices)} frames - {percentage:.1f}%)"
+            )
             print(f"  Frames: {frames_detected}")
         else:
             print(f"✗ {obj}: NOT DETECTED")
-    
-    print("\n" + "="*60)
-        
+
+    print("\n" + "=" * 60)
+
     # return list of detected objects
     detected_objects = [obj for obj, frames in object_detections.items() if frames]
-    
+
     print(f"Objects detected in video: {detected_objects}")
-    
+
     return detected_objects
 
 
 if __name__ == "__main__":
-    
+
     root_dir = "/home/stefano/Codebase/stereo4d-code/data"
-    # 
+    #
     split = "test"
-    
+
     scene = "0TT6XE7fGso"
     timestamp = "17520000"
-    
+
     # scene = "1ycXgM8obsc"
     # timestamp = "101835169"
-    
+
     # scene = "H5xOyNqJkPs"
     # timestamp = "38738739"
-    
+
     # scene = "0D5nD9OfyM0"
     # timestamp = "108508509"
-    
+
     # List of highest-level, non-overlapping object classes
     objs_list = [
         # Living Entities (Highest Abstraction)
-        "person", 
-        "animal", 
+        "person",
+        "animal",
         "vehicle",
         # "device",
         # "plant",
@@ -145,25 +151,25 @@ if __name__ == "__main__":
         # "tool",
         # "book"
     ]
-    
+
     # --- Configuration ---
     # You can change the model name if you have more VRAM (e.g., Qwen/Qwen2.5-VL-14B-Instruct)
     MODEL_NAME = "Qwen/Qwen2.5-VL-7B-Instruct"
 
     # Use "cuda" if you have an NVIDIA GPU, otherwise use "cpu" (inference will be slow)
-    DEVICE = "cuda" if torch.cuda.is_available() else "cpu" 
+    DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
     # --- 1. Load Model and Processor ---
     print(f"Loading model {MODEL_NAME} to device: {DEVICE}...")
 
     # Load the model with automatic device mapping for efficient memory usage
     model = AutoModelForVision2Seq.from_pretrained(
-        MODEL_NAME, 
+        MODEL_NAME,
         torch_dtype="auto",
-        device_map="auto" # Automatically determines where to load model layers
+        device_map="auto",  # Automatically determines where to load model layers
     ).eval()
 
     # Load the processor (tokenizer and image pre-processor)
     processor = AutoProcessor.from_pretrained(MODEL_NAME)
-    
+
     main(model, processor, root_dir, split, scene, timestamp, objs_list)

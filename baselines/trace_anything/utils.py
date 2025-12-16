@@ -4,6 +4,94 @@ import numpy as np
 import os
 import cv2
 from typing import Dict, List, Tuple
+from o3d_renderer import run_open3d_viewer
+from o3d_renderer import run_open3d_offline_renderer
+
+
+def view_with_open3d_viewer(frames: list[dict]):
+    
+    nr_frames = len(frames)
+    # print("nr_frames:", nr_frames)
+    
+    rgbs = None
+    depths = None
+    point_clouds = None
+    K = None
+    poses_c2w = None
+    tracks3d = None
+    instances_masks = None
+    
+    scale = 50.0  # Scale factor for better visibility
+    
+    first_frame = frames[0]
+    H, W = first_frame['H'], first_frame['W']
+    
+    rgbs = []
+    instances_masks = []
+    for frame in frames:
+        
+        # width, height
+        width, height = frame['W'], frame['H']
+        
+        # get RGB
+        rgb = frame['img_rgb_uint8']  # (H, W, 3) uint8
+        # print("RGB Image Shape:", rgb.shape)
+        rgbs.append(rgb)
+        
+        # get motion mask as instance mask
+        fg_mask_flat = frame['fg_mask_flat']  # (H*W,) bool tensor
+        # convert to numpy
+        fg_mask_flat = fg_mask_flat.cpu().numpy()
+        fg_mask = fg_mask_flat.reshape((height, width)).astype(np.uint8)
+        # print("Foreground Mask Shape:", fg_mask.shape)
+        instances_masks.append(fg_mask)
+        
+    # concatenate inputs
+    rgbs = np.stack(rgbs, axis=0)  # (T, H, W, 3) uint8
+    instances_masks = np.stack(instances_masks, axis=0)  # (T, H, W) uint8
+    
+    # get background point cloud 
+    bg_pts = first_frame['bg_pts']  # (N_bg, 3) float32 (constant over time)
+    img_rgb = first_frame['img_rgb_float']
+    bg_mask = first_frame['bg_mask_flat']
+    bg_colors = img_rgb[bg_mask][:bg_pts.shape[0]]
+    
+    point_clouds = []
+    for fid, frame in enumerate(frames):
+        
+        # get point cloud
+        pts_fg = frame['pts_fg_per_t'][fid]  # list of (N_t, 3) float32
+        fg_mask = frame['fg_mask_flat']
+        img_rgb = frame['img_rgb_float']
+        fg_colors = img_rgb[fg_mask][:pts_fg.shape[0]]
+        
+        # concatenate fg and bg points and colors
+        all_pts = np.concatenate([pts_fg, bg_pts], axis=0) * scale
+        all_colors = np.concatenate([fg_colors, bg_colors], axis=0)
+        all_segm = np.concatenate([np.ones(pts_fg.shape[0], dtype=np.uint8), 
+                                   np.zeros(bg_pts.shape[0], dtype=np.uint8)], axis=0)
+        
+        # print(f"{fid} pointcloud:", all_pts.shape, all_colors.shape)
+        pcd = {'xyz': all_pts, 'rgb': all_colors, 'inst_id': all_segm}
+        point_clouds.append(pcd)
+        
+    # Build trajectories across timesteps
+    N = first_frame['pts_fg_per_t'][0].shape[0]
+    tracks3d = np.full((N, nr_frames, 3), np.nan, dtype=np.float32)
+    for t_idx in range(nr_frames):
+        pts_t = first_frame['pts_fg_per_t'][t_idx]  # (N_t, 3)
+        tracks3d[:, t_idx, :] = pts_t * scale
+    
+    run_open3d_viewer(
+        nr_frames,
+        rgbs=rgbs,
+        depths=depths,
+        point_clouds=point_clouds,
+        K=K,
+        poses_c2w=poses_c2w,
+        tracks3d=tracks3d,
+        instances_masks=instances_masks,
+    )
 
 # ======== B-spline  ========
 PRECOMPUTED_KNOTS = {
@@ -72,7 +160,7 @@ def as_float(x):
 def build_precomputes(
     output: Dict,
     t_step: float,
-    ds: int,
+    ds: int,  # downsample factor
 ) -> Tuple[np.ndarray, List[Dict], List[np.ndarray], np.ndarray, np.ndarray]:
     preds = output["preds"]
     views = output["views"]
@@ -83,6 +171,7 @@ def build_precomputes(
 
     # timeline
     t_vals = np.arange(0.0, 1.0 + 1e-6, t_step, dtype=np.float32)
+    
     if t_vals[-1] >= 1.0:
         t_vals[-1] = 0.99
     T = len(t_vals)
@@ -183,3 +272,25 @@ def build_precomputes(
 
 def choose_nearest_frame_indices(frame_times: np.ndarray, t_vals: np.ndarray) -> np.ndarray:
     return np.array([int(np.argmin(np.abs(frame_times - tv))) for tv in t_vals], dtype=np.int64)
+
+
+def load_output(filepath):
+    # preds[i]['ctrl_pts3d'] — 3D control points, shape [K, H, W, 3]
+    # preds[i]['ctrl_conf'] — confidence maps, shape [K, H, W]
+    # preds[i]['fg_mask'] — binary mask [H, W], computed via Otsu thresholding on control-point variance.
+    # preds[i]['time'] — predicted scalar time ∈ [0, 1).
+    # views[i]['img'] — normalized input image tensor ∈ [-1, 1]
+
+    output = torch.load(filepath, map_location=torch.device('cpu'), weights_only=True)
+    # print(f"Loaded output from {filepath}")
+    # preds: list = output["preds"]
+    views: list = output["views"]
+    
+    nr_frames = len(views)
+    
+    # t_steps evenly spaced in [0, 1), one for each frame
+    t_step = 1 / (nr_frames - 1)
+    ds = 1  # no downsampling
+    t_vals, frames, fg_conf_all_t, bg_conf_all_flat, times = build_precomputes(output, t_step, ds)
+    
+    return frames

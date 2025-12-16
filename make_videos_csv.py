@@ -34,7 +34,7 @@ if __name__ == "__main__":
         sam3_dir = os.path.join("data", "stereo4d-sam3", split)
         
         # get first 100 files only for testing
-        files = files[:100]
+        # files = files[:100]
 
         for f in files:
             

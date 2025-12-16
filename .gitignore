@@ -10,4 +10,9 @@ data/*
 tracks2d/*
 slurm_jobs/*
 videogallery/videos/*
+videogallery/database_backups/*
 baselines/trace_anything/outputs/*
+outputs/*
+baselines/any4d/outputs/*
+*.egg-info
+*.pth
