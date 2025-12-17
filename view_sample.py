@@ -16,7 +16,7 @@ from o3d_renderer import run_open3d_offline_renderer
 
 
 def _run_open3d_viewer(
-    rgbs: np.ndarray,
+    rgbs: np.ndarray | tuple[np.ndarray, np.ndarray],
     depths: np.ndarray,
     intr_normalized: np.ndarray,
     width: int, 
@@ -43,8 +43,10 @@ def _run_open3d_viewer(
     K[1, :] *= height
     print("Intrinsic Matrix K:\n", K)
     
+    nr_frames = len(rgbs[1])
+    
     point_clouds = None
-    for fid in range(len(rgbs)):
+    for fid in range(nr_frames):
         
         if point_clouds is None:
             point_clouds = []
@@ -56,14 +58,12 @@ def _run_open3d_viewer(
         else:
             pose_c2w = poses_c2w[fid]
         
-        rgb = rgbs[fid]
+        rgb = rgbs[1][fid]  # Use right camera RGBs
         depth = depths[fid]
         instances = instances_masks[fid] if instances_masks is not None else None
         
         pcd = utils.generate_point_cloud(rgb, depth, K, pose_c2w, instances=instances)
         point_clouds.append(pcd)
-    
-    nr_frames = len(rgbs)
     
     run_open3d_viewer(
         nr_frames,
@@ -78,7 +78,7 @@ def _run_open3d_viewer(
     
     
 def _run_open3d_offline_renderer(
-    rgbs: np.ndarray,
+    rgbs: np.ndarray | tuple[np.ndarray, np.ndarray],
     depths: np.ndarray,
     intr_normalized: np.ndarray,
     width: int, 
@@ -91,8 +91,10 @@ def _run_open3d_offline_renderer(
     K[0, :] *= width
     K[1, :] *= height
 
+    nr_frames = len(rgbs[1])
+
     point_clouds = []
-    for fid in range(len(rgbs)):
+    for fid in range(nr_frames):
         # Check if stereo camera
         if isinstance(poses_c2w, tuple):
             # Use right camera pose
@@ -100,7 +102,7 @@ def _run_open3d_offline_renderer(
         else:
             pose_c2w = poses_c2w[fid]
         
-        rgb = rgbs[fid]
+        rgb = rgbs[1][fid]  # Use right camera RGBs
         depth = depths[fid]
         instances = instances_masks[fid] if instances_masks is not None else None
         
@@ -108,7 +110,6 @@ def _run_open3d_offline_renderer(
         point_clouds.append(pcd)
     
     # Reduced resolution for faster rendering
-    nr_frames = len(rgbs)
     base_width, base_height = 512, 512
     res_scale = 1
     width = base_width * res_scale
@@ -169,7 +170,7 @@ if __name__ == "__main__":
     if args.view:
         
         _run_open3d_viewer(
-            rgbs=rgbs_right,
+            rgbs=(rgbs_left, rgbs_right),
             depths=depths,
             intr_normalized=intr_normalized,
             width=width, height=height,
@@ -181,7 +182,7 @@ if __name__ == "__main__":
         # Offline rendering
         
         frames = _run_open3d_offline_renderer(
-            rgbs=rgbs_right,
+            rgbs=(rgbs_left, rgbs_right),
             depths=depths,
             intr_normalized=intr_normalized,
             width=width,

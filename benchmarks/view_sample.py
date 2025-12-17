@@ -9,6 +9,7 @@ from tapvid3d.utils import (
     plot_3d_tracks,
     plot_camera_trajectory,
     load_data,
+    view_with_open3d_viewer,
 )
 
 # load tapvid3d dataset tracks 3D
@@ -18,8 +19,18 @@ NUM_TRACKS = 300
 def main(data_path: Path, scene_name: str, save_path: Path):
 
     # Parse and examine contents of the dataset example file
-    video, tracks_xyz, visibility, intrinsics, extrinsics_w2c = load_data(data_path, scene_name, NUM_TRACKS)
+    video, tracks_xyz, visibility, intrinsics, extrinsics_w2c = load_data(data_path, scene_name)
 
+    if tracks_xyz.shape[1] > NUM_TRACKS:
+        indices = np.random.choice(tracks_xyz.shape[1], NUM_TRACKS, replace=False)
+        tracks_xyz = tracks_xyz[:, indices]
+        visibility = visibility[:, indices]
+
+    # View with Open3D viewer
+    view_with_open3d_viewer(video, tracks_xyz, visibility, intrinsics, extrinsics_w2c)
+    
+    exit(0)
+    
     # Visualize 2D point trajectories
 
     # Project to 2D in pixel coordinates

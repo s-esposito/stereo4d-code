@@ -350,21 +350,27 @@ class Renderer:
         """Update camera frustum for current frame."""
         assert self.o3d_renderer is not None, "Renderer not initialized."
         
-        if self.poses_c2w is None or self.K is None:
+        if self.poses_c2w is None and self.K is None:
             return
+        
+        poses_c2w = self.poses_c2w
+        
+        if poses_c2w is None and self.K is not None:
+            # make identity poses if not provided
+            poses_c2w = np.eye(4, dtype=np.float32)
         
         if self.K.ndim == 3:
             K = self.K[fid]
         else:
             K = self.K
         
-        if isinstance(self.poses_c2w, tuple):
+        if isinstance(poses_c2w, tuple):
             # Stereo camera
             self.o3d_renderer.scene.remove_geometry(f"{self.CAMERA_FRUSTUM_NAME}_left")
             self.o3d_renderer.scene.remove_geometry(f"{self.CAMERA_FRUSTUM_NAME}_right")
             
-            pose_c2w_left = self.poses_c2w[0][fid]
-            pose_c2w_right = self.poses_c2w[1][fid]
+            pose_c2w_left = poses_c2w[0][fid]
+            pose_c2w_right = poses_c2w[1][fid]
                 
             orange_color = [1, 0.5, 0]
             blue_color = [0, 0.5, 1]
@@ -376,6 +382,11 @@ class Renderer:
             # Mono camera
             self.o3d_renderer.scene.remove_geometry(self.CAMERA_FRUSTUM_NAME)
             
-            pose_c2w = self.poses_c2w[fid]
+            # check if fixed pose
+            if poses_c2w.ndim == 2:
+                pose_c2w = poses_c2w
+            else:
+                pose_c2w = poses_c2w[fid]
+                
             frustum = create_camera_frustum(pose_c2w, K)
             self.o3d_renderer.scene.add_geometry(self.CAMERA_FRUSTUM_NAME, frustum, self.line_material)

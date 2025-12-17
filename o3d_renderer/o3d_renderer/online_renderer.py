@@ -19,7 +19,7 @@ class OnlineRendererApp(Renderer):
     def __init__(
         self,
         nr_frames: int,
-        rgbs: np.ndarray | None = None,
+        rgbs: np.ndarray | tuple[np.ndarray, np.ndarray] | None = None,
         depths: np.ndarray | None = None,
         point_clouds: list | None = None,
         K: np.ndarray | None = None,  # (3, 3) or (T, 3, 3)
@@ -44,6 +44,23 @@ class OnlineRendererApp(Renderer):
         self.o3d_renderer.scene = Open3DScene(self.window.renderer)
         self.window.add_child(self.o3d_renderer)
         
+        # Setup RGB Image Widget if rgbs are available
+        self.rgb_widget = None
+        self.rgb_widget_right = None
+        if self.rgbs is not None:
+            # Check if stereo (tuple of two arrays)
+            if isinstance(self.rgbs, tuple):
+                # Left eye
+                self.rgb_widget = gui.ImageWidget()
+                self.window.add_child(self.rgb_widget)
+                # Right eye
+                self.rgb_widget_right = gui.ImageWidget()
+                self.window.add_child(self.rgb_widget_right)
+            else:
+                # Mono
+                self.rgb_widget = gui.ImageWidget()
+                self.window.add_child(self.rgb_widget)
+        
         # Setup UI Panel (Slider)
         self._setup_ui()
         
@@ -58,6 +75,10 @@ class OnlineRendererApp(Renderer):
         
         # Init first frame
         self._init_frame(fid=0)
+        
+        # Initialize RGB image display
+        if self.rgb_widget is not None:
+            self._update_rgb_image(0)
         
         # Set Camera View - store bounds and center for camera view switching
         if self.point_clouds is not None:
@@ -184,16 +205,119 @@ class OnlineRendererApp(Renderer):
         """Handle window layout changes."""
         r = self.window.content_rect
         panel_width = 250  # Width of the left-side panel
-        # Panel is positioned on the left side
-        self.panel.frame = gui.Rect(r.x, r.y, panel_width, r.height)
-        # Scene widget takes the right portion
-        self.o3d_renderer.frame = gui.Rect(r.x + panel_width, r.y, r.width - panel_width, r.height)
+        
+        # If RGB widget exists, place it in top right corner
+        if self.rgb_widget is not None:
+            # Check if stereo (both left and right widgets)
+            is_stereo = self.rgb_widget_right is not None
+            
+            if is_stereo:
+                # Both left and right images - split 250px between them
+                rgb_width_each = panel_width // 2  # 125px each
+                
+                # Calculate height based on actual video aspect ratio
+                if isinstance(self.rgbs, tuple):
+                    # Get aspect ratio from left eye video
+                    video_height, video_width = self.rgbs[0].shape[1:3]
+                    aspect_ratio = video_height / video_width
+                    rgb_height = int(rgb_width_each * aspect_ratio)
+                else:
+                    # Fallback (shouldn't happen in stereo mode)
+                    rgb_height = rgb_width_each
+                    
+                # Position at top right corner
+                rgb_x = r.x + r.width - (rgb_width_each * 2)  # Right aligned for both images
+                rgb_y = r.y  # Top aligned
+                
+                # Left eye at top right
+                self.rgb_widget.frame = gui.Rect(
+                    rgb_x, rgb_y, rgb_width_each, rgb_height
+                )
+                
+                # Right eye next to left eye
+                self.rgb_widget_right.frame = gui.Rect(
+                    rgb_x + rgb_width_each, rgb_y, rgb_width_each, rgb_height
+                )
+                
+                # Panel is positioned on the left side (full height)
+                self.panel.frame = gui.Rect(r.x, r.y, panel_width, r.height)
+                
+                # Scene widget takes the remaining right portion
+                self.o3d_renderer.frame = gui.Rect(
+                    r.x + panel_width, r.y, r.width - panel_width, r.height
+                )
+            else:
+                # Only one RGB image (mono) - full 250px width
+                rgb_width = panel_width  # Same width as control panel
+                
+                # Calculate height based on actual video aspect ratio
+                video_height, video_width = self.rgbs.shape[1:3]
+                aspect_ratio = video_height / video_width
+                rgb_height = int(rgb_width * aspect_ratio)
+                
+                # Position at top right corner
+                rgb_x = r.x + r.width - rgb_width  # Right aligned
+                rgb_y = r.y  # Top aligned
+                
+                # Panel is positioned on the left side (full height)
+                self.panel.frame = gui.Rect(r.x, r.y, panel_width, r.height)
+                
+                self.rgb_widget.frame = gui.Rect(
+                    rgb_x, rgb_y, rgb_width, rgb_height
+                )
+                
+                # Scene widget takes the full right portion
+                self.o3d_renderer.frame = gui.Rect(
+                    r.x + panel_width, r.y, r.width - panel_width, r.height
+                )
+        else:
+            # Panel is positioned on the left side (full height)
+            self.panel.frame = gui.Rect(r.x, r.y, panel_width, r.height)
+            
+            # Scene widget takes the full right portion
+            self.o3d_renderer.frame = gui.Rect(
+                r.x + panel_width, r.y, r.width - panel_width, r.height
+            )
 
     def _on_slider_changed(self, new_val):
         """Handle manual slider movement immediately."""
         val = int(new_val)
         if val != self.state['fid']:
             self._update_geometry(val)
+            self._update_rgb_image(val)
+    
+    def _update_rgb_image(self, fid):
+        """Update the RGB image widget for the current frame."""
+        if self.rgb_widget is not None and self.rgbs is not None:
+            # Check if stereo (tuple)
+            if isinstance(self.rgbs, tuple):
+                # Update left eye
+                rgb_left = self.rgbs[0][fid]
+                rgb_left = self._convert_rgb_to_uint8(rgb_left)
+                o3d_img_left = o3d.geometry.Image(rgb_left)
+                self.rgb_widget.update_image(o3d_img_left)
+                
+                # Update right eye
+                if self.rgb_widget_right is not None:
+                    rgb_right = self.rgbs[1][fid]
+                    rgb_right = self._convert_rgb_to_uint8(rgb_right)
+                    o3d_img_right = o3d.geometry.Image(rgb_right)
+                    self.rgb_widget_right.update_image(o3d_img_right)
+            else:
+                # Mono
+                rgb = self.rgbs[fid]
+                rgb = self._convert_rgb_to_uint8(rgb)
+                o3d_img = o3d.geometry.Image(rgb)
+                self.rgb_widget.update_image(o3d_img)
+    
+    def _convert_rgb_to_uint8(self, rgb):
+        """Convert RGB image to uint8 format for Open3D."""
+        if rgb.dtype != np.uint8:
+            if rgb.max() <= 1.0:
+                rgb = (rgb * 255).astype(np.uint8)
+            else:
+                rgb = rgb.astype(np.uint8)
+        return rgb
             
     def _on_show_tracks_toggled(self, is_checked):
         """Handle toggling of 3D tracks visibility."""

@@ -1,6 +1,6 @@
 [submodule "SEA-RAFT"]
-	path = SEA-RAFT
+	path = priors/SEA-RAFT
 	url = git@github.com:princeton-vl/SEA-RAFT.git
 [submodule "tapnet"]
-	path = tapnet
+	path = priors/tapnet
 	url = git@github.com:google-deepmind/tapnet.git

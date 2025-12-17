@@ -207,6 +207,11 @@ def load_data(root_dir: str, split:str, scene:str, timestamp:str):
     mask = utils.gradient_check_mask_relative(depths, 0.03)
     depths[mask] = 0
     
+    # remove depth at sky regions
+    if 'sky' in semantic_instances_masks:
+        sky_mask = semantic_instances_masks['sky'] > 0  # (T, N, H)
+        depths[sky_mask > 0] = 0
+    
     # unproject to point cloud
     intr_normalized = np.array([
         [intr_normalized['fx'], 0, intr_normalized['cx']],

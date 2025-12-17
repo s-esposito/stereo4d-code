@@ -16,3 +16,5 @@ outputs/*
 baselines/any4d/outputs/*
 *.egg-info
 *.pth
+priors/SEA-RAFT/*
+priors/tapnet/*

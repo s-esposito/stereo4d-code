@@ -8,6 +8,52 @@ import matplotlib.pyplot as plt
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 from scipy.spatial.transform import Rotation as R
+from o3d_renderer import run_open3d_viewer
+from o3d_renderer import run_open3d_offline_renderer
+
+
+def view_with_open3d_viewer(rgbs, tracks_xyz, visibility, intrinsics, extrinsics_w2c):
+    
+    nr_frames = len(rgbs)
+    depths = None
+    point_clouds = None
+    instances_masks = None
+    
+    tracks3d = tracks_xyz.copy()  # (T, N, 3)
+    # make nan invisible points
+    not_visible_mask = ~visibility  # (T, N)
+    tracks3d[not_visible_mask] = np.nan
+    
+    # permute to (N, T, 3)
+    tracks3d = np.transpose(tracks3d, (1, 0, 2))
+    
+    # print("tracks3d shape:", tracks3d.shape, tracks3d.dtype, np.nanmin(tracks3d), np.nanmax(tracks3d))
+    # print("rgbs shape:", rgbs.shape)
+    # print("tracks_xyz shape:", tracks_xyz.shape)
+    # print("visibility shape:", visibility.shape)
+        
+    K = np.array([
+        [intrinsics[0], 0, intrinsics[2]],
+        [0, intrinsics[1], intrinsics[3]],
+        [0, 0, 1]
+    ], dtype=np.float32)  # (3, 3)
+    # print("Camera intrinsics K:\n", K)
+    
+    poses_c2w = None
+    if extrinsics_w2c is not None:
+        poses_c2w = np.linalg.inv(extrinsics_w2c)  # (T, 4, 4)
+        # print("Camera extrinsics c2w shape:", poses_c2w.shape, poses_c2w.dtype)
+    
+    run_open3d_viewer(
+        nr_frames,
+        rgbs=rgbs,
+        depths=depths,
+        point_clouds=point_clouds,
+        K=K,
+        poses_c2w=poses_c2w,
+        tracks3d=tracks3d,
+        instances_masks=instances_masks,
+    )
 
 def load_data(data_path: Path, scene_name: str, num_tracks: int=300):
     
@@ -41,11 +87,6 @@ def load_data(data_path: Path, scene_name: str, num_tracks: int=300):
     print(f"  queries_xyt: {queries_xyt.shape}", queries_xyt.dtype)
     if extrinsics_w2c is not None:
         print(f"  extrinsics_w2c: {extrinsics_w2c.shape}", extrinsics_w2c.dtype)
-
-    if tracks_xyz.shape[1] > NUM_TRACKS:
-        indices = np.random.choice(tracks_xyz.shape[1], NUM_TRACKS, replace=False)
-        tracks_xyz = tracks_xyz[:, indices]
-        visibility = visibility[:, indices]
 
     # Sort points by their height in 3D for rainbow visualization
 
