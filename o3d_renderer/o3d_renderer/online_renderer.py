@@ -23,7 +23,7 @@ class OnlineRendererApp(Renderer):
         rgbs: np.ndarray | tuple[np.ndarray, np.ndarray] | None = None,
         depths: np.ndarray | None = None,
         point_clouds: list | None = None,
-        K: np.ndarray | None = None,  # (3, 3) or (T, 3, 3)
+        K: np.ndarray | tuple[np.ndarray, np.ndarray] | None = None,  # (3, 3) or (T, 3, 3)
         poses_c2w: np.ndarray | tuple[np.ndarray, np.ndarray] | None = None,
         tracks3d: np.ndarray | None = None,  # (N, T, 3)
         instances_masks: np.ndarray | None = None,
@@ -617,10 +617,10 @@ class OnlineRendererApp(Renderer):
 
 def run_open3d_viewer(
     nr_frames: int,
-    rgbs: np.ndarray | None = None,
+    rgbs: np.ndarray | tuple[np.ndarray, np.ndarray] | None = None,
     depths: np.ndarray | None = None,
     point_clouds: list | None = None,
-    K: np.ndarray | None = None,
+    K: np.ndarray | tuple[np.ndarray, np.ndarray] | None = None,
     poses_c2w: np.ndarray | tuple[np.ndarray, np.ndarray] | None = None,
     tracks3d: np.ndarray | None = None,
     instances_masks: np.ndarray | None = None,

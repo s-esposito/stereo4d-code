@@ -53,8 +53,8 @@ class Renderer:
         self.rgbs = rgbs
         self.depths = depths
         self.point_clouds = point_clouds
-        self.K = K  # (3, 3) or (T, 3, 3)
-        self.poses_c2w = poses_c2w  # (T, 4, 4) or tuple of two (stereo)
+        self.K = K  # (3, 3) or (T, 3, 3) or tuple of two
+        self.poses_c2w = poses_c2w  # (T, 4, 4) or tuple of two
         self.tracks3d = tracks3d
         self.instances_masks = instances_masks
         self.nr_keyframes = 10
@@ -392,7 +392,7 @@ class Renderer:
         """Update camera frustum for current frame."""
         assert self.o3d_renderer is not None, "Renderer not initialized."
         
-        if self.poses_c2w is None and self.K is None:
+        if self.K is None:
             return
         
         poses_c2w = self.poses_c2w
@@ -401,11 +401,6 @@ class Renderer:
             # make identity poses if not provided
             poses_c2w = np.eye(4, dtype=np.float32)
         
-        if self.K.ndim == 3:
-            K = self.K[fid]
-        else:
-            K = self.K
-        
         if isinstance(poses_c2w, tuple):
             # Stereo camera
             self.o3d_renderer.scene.remove_geometry(f"{self.CAMERA_FRUSTUM_NAME}_left")
@@ -413,11 +408,26 @@ class Renderer:
             
             pose_c2w_left = poses_c2w[0][fid]
             pose_c2w_right = poses_c2w[1][fid]
+            
+            if isinstance(self.K, tuple):
+                K_left = self.K[0]  # (3, 3)
+                K_right = self.K[1]  # (3, 3)
+                print("K_left:", K_left)
+                print("K_right:", K_right)
+                assert K_left.shape == (3, 3), "Intrinsic matrix K_left must be of shape (3, 3)."
+                assert K_right.shape == (3, 3), "Intrinsic matrix K_right must be of shape (3, 3)."
+            else:
+                # (3, 3) or (T, 3, 3)
+                if self.K.ndim == 3:
+                    K_left = self.K[fid]
+                else:
+                    K_left = self.K
+                K_right = K_left
                 
             orange_color = [1, 0.5, 0]
             blue_color = [0, 0.5, 1]
-            frustum_left = create_camera_frustum(pose_c2w_left, K, color=orange_color)
-            frustum_right = create_camera_frustum(pose_c2w_right, K, color=blue_color)
+            frustum_left = create_camera_frustum(pose_c2w_left, K_left, color=orange_color)
+            frustum_right = create_camera_frustum(pose_c2w_right, K_right, color=blue_color)
             self.o3d_renderer.scene.add_geometry(f"{self.CAMERA_FRUSTUM_NAME}_left", frustum_left, self.line_material)
             self.o3d_renderer.scene.add_geometry(f"{self.CAMERA_FRUSTUM_NAME}_right", frustum_right, self.line_material)        
         else:
@@ -430,5 +440,17 @@ class Renderer:
             else:
                 pose_c2w = poses_c2w[fid]
                 
-            frustum = create_camera_frustum(pose_c2w, K)
+            if isinstance(self.K, tuple):
+                K_left = self.K[0]  # (3, 3)
+                K_right = self.K[1]  # (3, 3)
+                assert K_left.shape == (3, 3), "Intrinsic matrix K_left must be of shape (3, 3)."
+                assert K_right.shape == (3, 3), "Intrinsic matrix K_right must be of shape (3, 3)."
+            else:
+                if self.K.ndim == 3:
+                    K_left = self.K[fid]
+                else:
+                    K_left = self.K
+                K_right = K_left
+                
+            frustum = create_camera_frustum(pose_c2w, K_left)
             self.o3d_renderer.scene.add_geometry(self.CAMERA_FRUSTUM_NAME, frustum, self.line_material)

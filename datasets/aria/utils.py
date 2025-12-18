@@ -23,29 +23,47 @@ FIRST_FRAME_ID = 10  # wait for exposure stabilization
 def view_with_open3d_viewer(data):
     nr_frames = data["rectified_images"].shape[0]
     depths = data["depth_maps"]  # (nr_frames, H, W)
-    rgbs = data["rectified_images"]  # (nr_frames, H, W, 3)
-    K = data["intrinsics"]  # (nr_frames, 3, 3)
-    poses_c2w = data["extrinsics"]  # (nr_frames, 4, 4)
+    cv_imgs = data["rectified_images"]  # (nr_frames, H, W, 3)
+    rgb_imgs = data["undistorted_images"]  # (nr_frames, H, W, 3)
+    rgbs = (cv_imgs, rgb_imgs)
+    K = data["intrinsics"]  # tuple of (cv_K, rgb_K)
+    K_cv = K[0]
+    K_rgb = K[1]
+    poses_c2w = data["extrinsics"]  # tuple of (cv_poses, rgb_poses)
+    cv_poses_c2w = poses_c2w[0]
+    rgb_poses_c2w = poses_c2w[1]
     
     point_clouds = []
     for fid in range(nr_frames):
         
-        # Get K for this frame
-        K_frame = K[fid] if K.ndim == 3 else K
+        pcd = utils.generate_point_cloud(cv_imgs[fid], depths[fid], K_cv, cv_poses_c2w[fid])
         
-        # Check if stereo camera
-        if isinstance(poses_c2w, tuple):
-            # Use right camera pose
-            pose_c2w = poses_c2w[1][fid]
-            rgb = rgbs[1][fid]  # Use right camera RGBs
-        else:
-            pose_c2w = poses_c2w[fid]
-            rgb = rgbs[fid]
+        xyz = pcd["xyz"]
         
-        depth = depths[fid]
-        instances = None
+        # project to rgb camera
+        rgb_points_2d = utils.project_points_3d_to_2d(xyz, K_rgb, rgb_poses_c2w[fid])
         
-        pcd = utils.generate_point_cloud(rgb, depth, K_frame, pose_c2w, instances=instances)
+        # sample rgb image at projected points to get colors
+        rgb_img = rgb_imgs[fid]
+        h, w = rgb_img.shape[:2]
+        
+        # Extract pixel coordinates
+        u = rgb_points_2d[:, 0]
+        v = rgb_points_2d[:, 1]
+        
+        # Create mask for valid points (within image bounds and in front of camera)
+        valid_mask = (u >= 0) & (u < w) & (v >= 0) & (v < h)
+        
+        # Clip coordinates to be within image bounds for sampling
+        u_clipped = np.clip(np.round(u).astype(int), 0, w - 1)
+        v_clipped = np.clip(np.round(v).astype(int), 0, h - 1)
+        
+        # Sample RGB colors from the image
+        sampled_colors = rgb_img[v_clipped, u_clipped]  # (N, 3)
+        
+        # Update point cloud colors, but only for valid points
+        pcd["rgb"][valid_mask] = sampled_colors[valid_mask]
+
         point_clouds.append(pcd)
     
     run_open3d_viewer(
@@ -61,6 +79,130 @@ def view_with_open3d_viewer(data):
 
 
 def load_data(scene_dir, scene_name):
+    
+    # https://github.dev/facebookresearch/projectaria_tools/blob/08a177a445e39bbf577f399ebaaf8f3eba490639/core/calibration/camera_projections/FisheyeRadTanThinPrism.h#L58
+    
+    # Load VRS file
+    vrs_file_path = os.path.join(scene_dir, "video.vrs")
+    
+    from projectaria_tools.core import data_provider
+    from projectaria_tools.core import calibration
+    from projectaria_tools.core.image import InterpolationMethod
+
+    # Load VRS file
+    vrs_data_provider = data_provider.create_vrs_data_provider(vrs_file_path)
+
+    # Obtain device calibration
+    device_calib = vrs_data_provider.get_device_calibration()
+    if device_calib is None:
+        raise RuntimeError(
+            "device calibration does not exist! Please use a VRS that contains valid device calibration for this tutorial. "
+        )
+
+    # You can obtain device version (Aria Gen1 vs Gen2), or device subtype (DVT with small/large frame width + short/long temple arms, etc) information from calibration
+    if device_calib is not None:
+        device_version = device_calib.get_device_version()
+        device_subtype = device_calib.get_device_subtype()
+
+        print("Obtained valid calibration: ")
+        print(f"Device Version: {calibration.get_name(device_version)}")
+        print(f"Device Subtype: {device_subtype}")
+        
+    # Get sensor labels within device calibration
+    all_labels = device_calib.get_all_labels()
+    print(f"All sensors within device calibration: {all_labels}")
+    print(f"Cameras: {device_calib.get_camera_labels()}")
+
+    # retrieve camera to device CV transformation
+    # cv_sensor_name = "camera-cv"
+
+    # input: retrieve image as a numpy array
+    sensor_name = "camera-rgb"
+    # sensor_stream_id = vrs_data_provider.get_stream_id_from_label(sensor_name)
+    # image_data = vrs_data_provider.get_image_data_by_index(sensor_stream_id, 0)
+    # image_array = image_data[0].to_numpy_array()
+    # input: retrieve image distortion
+    device_calib = vrs_data_provider.get_device_calibration()
+    
+    # # get device transformation
+    # T_device_camera = device_calib.get_transform_device_camera()
+    # print("T_device_camera:\n", T_device_camera.to_matrix())
+    # exit(0)
+    
+    camera_calib = device_calib.get_camera_calib(sensor_name)
+    
+    rgb_camera_focal_lengths = camera_calib.get_focal_lengths()
+    rgb_camera_principal_point = camera_calib.get_principal_point()
+    rgb_camera_intrinsics = np.array([[rgb_camera_focal_lengths[0], 0, rgb_camera_principal_point[0]],
+                                        [0, rgb_camera_focal_lengths[1], rgb_camera_principal_point[1]],
+                                        [0, 0, 1]])
+    
+    # downscale intrinsics by factor
+    rgb_downscale_factor = 4
+    rgb_camera_intrinsics[0, 0] /= rgb_downscale_factor
+    rgb_camera_intrinsics[1, 1] /= rgb_downscale_factor
+    rgb_camera_intrinsics[0, 2] /= rgb_downscale_factor
+    rgb_camera_intrinsics[1, 2] /= rgb_downscale_factor
+    
+    if camera_calib is None:
+        raise RuntimeError(
+            "camera-rgb calibration does not exist! Please use a VRS that contains valid RGB camera calibration for this tutorial. "
+        )
+
+    print(f"-------------- camera calibration for {sensor_name} ----------------")
+    print(f"Image Size: {camera_calib.get_image_size()}")
+    print(f"Camera Model Type: {camera_calib.get_model_name()}")
+    print(
+        f"Camera Intrinsics Params: {rgb_camera_intrinsics}, \n"
+        f"where focal is {camera_calib.get_focal_lengths()}, "
+        f"and principal point is {camera_calib.get_principal_point()}\n"
+    )
+
+    # #
+    # T_device = vrs_data_provider.get_device_calibration().get_transform_device_camera()
+    # print("T_device:\n", T_device.to_matrix())
+    # exit(0)
+    
+    # device frame is defined by originSensorLabel
+    origin_label = device_calib.get_origin_label()
+    T_device_to_origin = device_calib.get_camera_calib(origin_label).get_transform_device_camera()
+    print(f"T_device_to_origin ({origin_label}):\n", T_device_to_origin.to_matrix())
+    
+    # camera pose in the device frame (device to camera transformation) device frame
+    T_device_camera = camera_calib.get_transform_device_camera()
+    print(f"Camera Extrinsics T_Device_Camera:\n{T_device_camera.to_matrix()}")
+    
+    # for label in device_calib.get_camera_labels():
+    #     # get T_device (camera-slam-left) transformation
+    #     T_device = device_calib.get_camera_calib(label).get_transform_device_camera()
+    #     print(f"{label} T_device:\n", T_device.to_matrix())
+    # exit(0)
+    
+    # Undistrort an image
+    # create output calibration: a linear model of image example_linear_rgb_camera_model_params.
+    
+    # Invisible pixels are shown as black.
+    example_linear_rgb_camera_model_params = [4032, 3024, 1600]
+    dst_calib = calibration.get_linear_camera_calibration(example_linear_rgb_camera_model_params[0], example_linear_rgb_camera_model_params[1], example_linear_rgb_camera_model_params[2], sensor_name)
+
+    # distort image
+    # image_array = image_data[0].to_numpy_array()
+    # rectified_array = calibration.distort_by_calibration(image_array, dst_calib, camera_calib, InterpolationMethod.BILINEAR)
+
+    # # visualize input and results
+    # import matplotlib.pyplot as plt
+    # plt.figure()
+    # fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    # fig.suptitle(f"Image undistortion (focal length = {dst_calib.get_focal_lengths()})")
+    # axes[0].imshow(image_array, cmap="gray", vmin=0, vmax=255)
+    # axes[0].title.set_text(f"sensor image ({sensor_name})")
+    # axes[0].tick_params(left=False, right=False, labelleft=False, labelbottom=False, bottom=False)
+    # axes[1].imshow(rectified_array, cmap="gray", vmin=0, vmax=255)
+    # axes[1].title.set_text(f"undistorted image ({sensor_name})")
+    # axes[1].tick_params(left=False, right=False, labelleft=False, labelbottom=False, bottom=False)
+    # plt.show()
+    
+    # exit(0)
     
     # load slam data
     scene_slam_dir = os.path.join(scene_dir, "mps/slam")
@@ -91,33 +233,28 @@ def load_data(scene_dir, scene_name):
             online_calibration_data.append(json.loads(line))
     print(f"Loaded online calibration for {len(online_calibration_data)} frames from {online_calibration_path}")
 
-    distortion_params = []
-    for calibration_data in online_calibration_data:
-        # 'ImageSizes', 'utc_timestamp_ns', 'tracking_timestamp_us', 'ImuCalibrations', 'CameraCalibrations'
-        rgb_image_size = calibration_data['ImageSizes'][-1]  # last is RGB
-        rgb_calibration_data = calibration_data['CameraCalibrations'][-1]  # last is RGB
-        print("RGB image size:", rgb_image_size)
-        print("RGB calibration data keys:", rgb_calibration_data.keys())
-        # print("Calibrated", rgb_calibration_data['Calibrated'])  # True
-        # print("Projection", rgb_calibration_data['Projection'])
-        params = rgb_calibration_data['Projection']['Params']  # FisheyeRadTanThinPrism
-        print("Distortion parameters:", params)
-        distortion_params.append(params)
-    distortion_params = np.array(distortion_params)  # (T, 15)
-    print("Distortion parameters shape:", distortion_params.shape)
+    # distortion_params = []
+    # for calibration_data in online_calibration_data:
+    #     # 'ImageSizes', 'utc_timestamp_ns', 'tracking_timestamp_us', 'ImuCalibrations', 'CameraCalibrations'
+    #     rgb_image_size = calibration_data['ImageSizes'][-1]  # last is RGB
+    #     rgb_calibration_data = calibration_data['CameraCalibrations'][-1]  # last is RGB
+    #     print("RGB image size:", rgb_image_size)
+    #     print("RGB calibration data keys:", rgb_calibration_data.keys())
+    #     # print("Calibrated", rgb_calibration_data['Calibrated'])  # True
+    #     # print("Projection", rgb_calibration_data['Projection'])
+    #     params = rgb_calibration_data['Projection']['Params']  # FisheyeRadTanThinPrism
+    #     print("Distortion parameters:", params)
+    #     distortion_params.append(params)
+    # distortion_params = np.array(distortion_params)  # (T, 15)
+    # print("Distortion parameters shape:", distortion_params.shape)
     
-    # check if distortion params are the same for all frames
-    all_same = np.all(np.isclose(distortion_params, distortion_params[0], atol=1e-6), axis=1)
-    if np.all(all_same):
-        print("All distortion parameters are the same for all frames.")
-    else:
-        raise ValueError("Varying distortion parameters not supported yet.")
-    distortion_params = distortion_params[0]
-    
-    # camera_projection = CameraProjection(
-    #     CameraModelType.FISHEYE624, distortion_params
-    # )
-    
+    # # check if distortion params are the same for all frames
+    # all_same = np.all(np.isclose(distortion_params, distortion_params[0], atol=1e-6), axis=1)
+    # if np.all(all_same):
+    #     print("All distortion parameters are the same for all frames.")
+    # else:
+    #     raise ValueError("Varying distortion parameters not supported yet.")
+    # distortion_params = distortion_params[0]
     
     # load video
     video_path = os.path.join(scene_dir, "video_main_rgb.mp4")
@@ -126,16 +263,30 @@ def load_data(scene_dir, scene_name):
     frames = np.stack(frames, axis=0)  # (T, H, W, 3)
     print(f"Loaded {nr_frames} frames from video at {video_path}")
     
-    # # Initialize the rectifier once
-    # rectifier = FisheyeRectifier(distortion_params, w, h)
+    # undistort frames
+    # check if undistorted frames have been cached
+    undistorted_dir = os.path.join(scene_dir, "undistorted")
+    if not os.path.exists(undistorted_dir):
+        os.makedirs(undistorted_dir)
     
-    # # undistort frames
-    # undistorted_frames = []
-    # for fid in range(nr_frames):
-    #     frame = frames[fid]
-    #     undistorted_frame = rectifier.apply(frame)
-    #     undistorted_frames.append(undistorted_frame)
-    # undistorted_frames = np.stack(undistorted_frames, axis=0)  # (T, H, W, 3)
+    undistorted_frames = []
+    for fid in tqdm(range(nr_frames), desc="Undistorting frames"):
+        
+        # check if undistorted frame already exists
+        if os.path.exists(os.path.join(undistorted_dir, f"frame_{fid:05d}.png")):
+            undistorted_frame = imageio.imread(os.path.join(undistorted_dir, f"frame_{fid:05d}.png"))
+            undistorted_frames.append(undistorted_frame)
+            continue
+        else:
+            frame = frames[fid]
+            undistorted_frame = calibration.distort_by_calibration(frame, dst_calib, camera_calib, InterpolationMethod.BILINEAR)
+            undistorted_frames.append(undistorted_frame)
+            # downsample to by factor
+            undistorted_frame = cv2.resize(undistorted_frame, (undistorted_frame.shape[1] // rgb_downscale_factor, undistorted_frame.shape[0] // rgb_downscale_factor), interpolation=cv2.INTER_LINEAR)
+            # save undistorted frame
+            imageio.imwrite(os.path.join(undistorted_dir, f"frame_{fid:05d}.png"), undistorted_frame)
+            
+    undistorted_frames = np.stack(undistorted_frames, axis=0)  # (T, H, W, 3)
     
     # # plot first frame
     # import matplotlib.pyplot as plt
@@ -236,14 +387,30 @@ def load_data(scene_dir, scene_name):
         extrinsics_list.append(T_world_camera)
         
     # Stack intrinsics and extrinsics
-    intrinsics = np.stack(intrinsics_list, axis=0)  # (T, 3, 3)
+    # intrinsics = np.stack(intrinsics_list, axis=0)  # (T, 3, 3)
+    intrinsics = intrinsics_list[0]  # assume all the same
     extrinsics = np.stack(extrinsics_list, axis=0)  # (T, 4, 4)
     print(f"Loaded intrinsics shape: {intrinsics.shape}")
     print(f"Loaded extrinsics (camera-to-world) shape: {extrinsics.shape}")
     
+    # # print(extrinsics[0])
+    # exit(0)
+    
     # re-base all extrinsics such that the first frame is at the origin
-    T0_inv = np.linalg.inv(extrinsics[0])
-    extrinsics = T0_inv @ extrinsics
+    rebase = False
+    if rebase:
+        T0_inv = np.linalg.inv(extrinsics[0])
+        extrinsics = T0_inv @ extrinsics
+    
+    rgb_camera_extrinsics = []
+    for c2w in extrinsics:
+        # apply T_device_camera to get device to world
+        T_device_world = c2w @ np.linalg.inv(T_device_camera.to_matrix())
+        # T_device_world = c2w @ T_device_camera.to_matrix()
+        # T_device_world = np.linalg.inv(T_device_camera.to_matrix()) @ c2w
+        rgb_camera_extrinsics.append(T_device_world)
+    rgb_camera_extrinsics = np.stack(rgb_camera_extrinsics, axis=0)  # (T, 4, 4)
+    print(f"Computed RGB camera extrinsics shape: {rgb_camera_extrinsics.shape}")
     
     # load data
     depth_dir = os.path.join(scene_depth_dir, "depth")
@@ -294,48 +461,12 @@ def load_data(scene_dir, scene_name):
     w, h = rectified_images.shape[2], rectified_images.shape[1]
     print(f"Loaded rectified images shape: {rectified_images.shape}")
     
-    # 1. Your input pixel on the 'clean' undistorted image
-    points_undistorted = np.array([[359, 246]])
-    print("Points undistorted:", points_undistorted)
-
-    # # 2. Extract Intrinsics
-    # fu, fv, cu, cv = distortion_params[0:4]
-
-    # # 3. Convert Pixel -> Normalized Plane (Crucial Step)
-    # # This centers the point and scales it so the math doesn't explode
-    # x_norm = (points_undistorted[:, 0] - cu) / fu
-    # y_norm = (points_undistorted[:, 1] - cv) / fv
-
-    # points_norm = np.array([[x_norm, y_norm]])
-    # mapped_points = map_undistorted_to_distorted(points_undistorted, intrinsics[0], distortion_params)
-    # print("Mapped points (undistorted to distorted):", mapped_points)
-    
-    # # plot first rectified image
-    # import matplotlib.pyplot as plt
-    # plt.subplot(1, 2, 1)
-    # plt.imshow(rectified_images[0])
-    # # plot points undistorted on image
-    # plt.scatter(points_undistorted[:, 0], points_undistorted[:, 1], c='r', s=50, label='Undistorted Points')
-    # plt.subplot(1, 2, 2)
-    # plt.imshow(frames[0])
-    # # plot mapped points distorted on image
-    # plt.scatter(mapped_points[:, 0], mapped_points[:, 1], c='b', s=50, label='Distorted Points')
-    # # plt.title("First Rectified Image")
-    # plt.show()
-    
-    # print("intrinsics:", intrinsics[0])
-    
-    # exit(0)
-    
     data = {
         "depth_maps": depth_maps,
         "rectified_images": rectified_images,
-        "intrinsics": intrinsics,
-        "extrinsics": extrinsics
+        "undistorted_images": undistorted_frames,
+        "intrinsics": (intrinsics, rgb_camera_intrinsics),  # cv and rgb camera intrinsics
+        "extrinsics": (extrinsics, rgb_camera_extrinsics),  # cv and rgb camera extrinsics
     }
     
     return data
-
-
-def map_undistorted_to_distorted(points_2d, K, aria_params):
-    pass
