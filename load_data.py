@@ -279,24 +279,55 @@ def load_data(root_dir: str, split:str, scene:str, timestamp:str):
         
         # unproject 2d tracks to 3d using new depth maps
         tracks3d = []
+        prev_points_depth = None
+        ended_tracks_mask = np.zeros((tracks2d.shape[0],), dtype=bool)
         for t in range(tracks2d.shape[1]):
+            
+            #
             points2d = tracks2d[:, t, :]  # (N, 2)
-            depth = depths[t]  # (H, W)
+            depth = depths[t].copy()  # (H, W)
+            
+            # get foreground mask
+            foreground_mask = (instances_masks[t] > 0) if instances_masks is not None else (depth > 0)
+            
+            # zero-out any non-background depth
+            depth[~foreground_mask] = 0
+            
             points_depth = utils.sample_depth_from_2d_points(
                 points2d, depth
             )  # (N,)
+            
+            if prev_points_depth is not None:
+                # check for sudden depth changes
+                depth_diff = np.abs(points_depth - prev_points_depth)
+                large_change = depth_diff / (prev_points_depth + 1e-6) > 0.5  # 50% change
+                ended_tracks_mask |= large_change
+            
             points_depth[points_depth <= MIN_DEPTH] = np.nan  # mark invalid depth
+            points_depth[ended_tracks_mask] = np.nan  # mark ended tracks as invalid
+            
             # unproject to 3d
-            # pose_c2w = np.eye(4, dtype=np.float32)
-            # pose_c2w[:3, :4] = extrs_right[t]
             pose_c2w = extrs_right[t]
             points3d = utils.unproject_points_2d_to_3d(
                 points2d, points_depth, K, pose_c2w
             )  # (N, 3)
             tracks3d.append(points3d)
+            prev_points_depth = points_depth.copy()
             # assert np.isnan(tracks3d).sum() == 0, "nan in unprojected 3d points"
             
         tracks3d = np.stack(tracks3d, axis=1)  # (N, T, 3)
+        
+        # # filter tracks3d after depth spikes
+        # # for each trajectory and for each frame, check if the depth change is too large
+        # depth_threshold = 0.2  # meters
+        # for i in range(tracks3d.shape[0]):
+        #     traj = tracks3d[i]  # (T, 3)
+        #     depths_traj = np.linalg.norm(traj, axis=-1)  # (T,)
+        #     for t in range(1, tracks3d.shape[1]):
+        #         if np.isnan(depths_traj[t - 1]) or np.isnan(depths_traj[t]):
+        #             continue
+        #         if abs(depths_traj[t] - depths_traj[t - 1]) > depth_threshold:
+        #             tracks3d[i, t, :] = np.nan  # mark as invalid
         
     input_dict['intr_normalized'] = intr_normalized
     input_dict['depths'] = depths

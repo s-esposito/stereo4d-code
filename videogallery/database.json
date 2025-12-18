@@ -280,14 +280,16 @@
     "lastModified": "2025-12-15T08:18:54.690Z"
   },
   "1gEAP-CkEXU_103837171": {
-    "tags": [],
+    "tags": [
+      "all-good"
+    ],
     "classes": [
       "person",
       "bag",
       "phone"
     ],
     "timestamp": "2025-12-15T08:18:54.690Z",
-    "lastModified": "2025-12-15T08:18:54.690Z"
+    "lastModified": "2025-12-18T12:47:50.889Z"
   },
   "1qsOI1qIXIM_101835169": {
     "tags": [],
@@ -310,14 +312,16 @@
     "lastModified": "2025-12-15T11:54:08.659Z"
   },
   "1ycXgM8obsc_101835169": {
-    "tags": [],
+    "tags": [
+      "all-good"
+    ],
     "classes": [
       "animal",
       "person",
       "bag"
     ],
     "timestamp": "2025-12-15T08:18:54.690Z",
-    "lastModified": "2025-12-15T08:18:54.690Z"
+    "lastModified": "2025-12-18T12:47:29.150Z"
   },
   "25hfLzirn8c_15081748": {
     "tags": [],
@@ -1533,13 +1537,15 @@
     "lastModified": "2025-12-15T08:18:54.692Z"
   },
   "H5xOyNqJkPs_115982649": {
-    "tags": [],
+    "tags": [
+      "warning"
+    ],
     "classes": [
       "person",
       "bag"
     ],
     "timestamp": "2025-12-15T08:18:54.692Z",
-    "lastModified": "2025-12-15T08:18:54.692Z"
+    "lastModified": "2025-12-18T13:18:15.896Z"
   },
   "HKWUeir9VG4_15081748": {
     "tags": [],

@@ -42,6 +42,7 @@ import argparse
 import shutil
 import threading
 import time
+import hashlib
 from datetime import datetime
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import unquote
@@ -49,6 +50,7 @@ from urllib.parse import unquote
 # Database file path
 DATABASE_FILE = 'database.json'
 BACKUP_DIR = 'database_backups'
+LAST_BACKUP_HASH_FILE = os.path.join(BACKUP_DIR, '.last_backup_hash')
 
 class VideoGalleryHandler(SimpleHTTPRequestHandler):
     """Custom HTTP request handler with database API support"""
@@ -164,7 +166,7 @@ class VideoGalleryHandler(SimpleHTTPRequestHandler):
 
 
 def create_backup():
-    """Create a timestamped backup of the database"""
+    """Create a timestamped backup of the database only if it has changed since last backup"""
     if not os.path.exists(DATABASE_FILE):
         return
     
@@ -172,6 +174,21 @@ def create_backup():
     if not os.path.exists(BACKUP_DIR):
         os.makedirs(BACKUP_DIR)
         print(f"Created backup directory: {BACKUP_DIR}")
+    
+    # Calculate hash of current database
+    current_hash = calculate_file_hash(DATABASE_FILE)
+    
+    # Check if database has changed since last backup
+    if os.path.exists(LAST_BACKUP_HASH_FILE):
+        try:
+            with open(LAST_BACKUP_HASH_FILE, 'r') as f:
+                last_hash = f.read().strip()
+            
+            if current_hash == last_hash:
+                print("⊘ No changes detected, skipping backup")
+                return
+        except Exception as e:
+            print(f"⚠ Error reading last backup hash: {e}")
     
     # Generate timestamp for backup filename
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -183,11 +200,29 @@ def create_backup():
         shutil.copy2(DATABASE_FILE, backup_path)
         print(f"✓ Backup created: {backup_filename}")
         
+        # Save current hash
+        with open(LAST_BACKUP_HASH_FILE, 'w') as f:
+            f.write(current_hash)
+        
         # Clean old backups (keep last 50)
         cleanup_old_backups(50)
         
     except Exception as e:
         print(f"✗ Error creating backup: {e}")
+
+
+def calculate_file_hash(filepath):
+    """Calculate MD5 hash of a file"""
+    hash_md5 = hashlib.md5()
+    try:
+        with open(filepath, 'rb') as f:
+            # Read in chunks to handle large files
+            for chunk in iter(lambda: f.read(4096), b""):
+                hash_md5.update(chunk)
+        return hash_md5.hexdigest()
+    except Exception as e:
+        print(f"Error calculating hash: {e}")
+        return ""
 
 
 def cleanup_old_backups(keep_count=50):

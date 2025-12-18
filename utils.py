@@ -285,7 +285,7 @@ def get_unique_scenes(file_list):
     return unique_files_list
 
 
-def load_video_frames(video_path):
+def load_video_frames(video_path, max_frames: int = -1, forced_fps: int = -1, first_frame_id: int = 0):
     """
     Loads an MP4 video as a sequence of frames using OpenCV.
 
@@ -301,12 +301,37 @@ def load_video_frames(video_path):
     # The constant for frame count is CAP_PROP_FRAME_COUNT
     frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
+    if first_frame_id > 0:
+        frame_count -= first_frame_id
+        assert frame_count > 0, "first_frame_id exceeds total number of frames."
+        cap.set(cv2.CAP_PROP_POS_FRAMES, first_frame_id)
+
+    if max_frames > 0:
+        frame_count = min(frame_count, max_frames)
+    
+    if forced_fps > 0:
+        original_fps = cap.get(cv2.CAP_PROP_FPS)
+        frame_skip = max(1, int(original_fps // forced_fps))
+    else:
+        frame_skip = 1
+
     frames = []
 
     # 3. Iterate and read frames
+    current_frame = 0
     while cap.isOpened():
+        
+        if current_frame >= frame_count:
+            break
+        
+        if current_frame % frame_skip != 0:
+            current_frame += 1
+            cap.grab()  # Skip this frame
+            continue
+        
         # ret (return value) is a boolean, frame is the frame itself (a NumPy array)
         ret, frame = cap.read()
+        current_frame += 1
 
         if ret:
             # Optionally convert BGR (OpenCV default) to RGB

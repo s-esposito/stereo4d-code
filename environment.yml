@@ -27,4 +27,4 @@ dependencies:
     - dm-haiku
     - tensorflow_datasets
     - moviepy
-
+    - projectaria_tools
