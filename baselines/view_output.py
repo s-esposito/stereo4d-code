@@ -4,8 +4,8 @@ import numpy as np
 if __name__ == "__main__":
     
     # filepath = "/home/stefano/Codebase/stereo4d-code/baselines/trace_anything/outputs/H5xOyNqJkPs_38738739-right_rectified/output.pt"
-    # filepath = "/home/stefano/Codebase/stereo4d-code/baselines/trace_anything/outputs/elephant/output.pt"
-    filepath = "/home/stefano/Codebase/stereo4d-code/baselines/any4d/outputs/H5xOyNqJkPs_38738739-right_rectified"
+    filepath = "/home/stefano/Codebase/stereo4d-code/baselines/trace_anything/outputs/elephant/output.pt"
+    # filepath = "/home/stefano/Codebase/stereo4d-code/baselines/any4d/outputs/H5xOyNqJkPs_38738739-right_rectified"
     # filepath = "/home/stefano/Codebase/stereo4d-code/baselines/any4d/outputs/stroller"
     
     # check if path contrains "trace_anything"

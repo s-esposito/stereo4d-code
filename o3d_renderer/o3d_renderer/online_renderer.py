@@ -5,6 +5,7 @@ Online renderer with interactive GUI for visualizing 3D point clouds and tracks.
 import time
 import numpy as np
 import open3d as o3d
+import cv2
 from open3d.visualization import gui
 from open3d.visualization.gui import Application, SceneWidget
 from open3d.visualization.rendering import Open3DScene
@@ -47,6 +48,7 @@ class OnlineRendererApp(Renderer):
         # Setup RGB Image Widget if rgbs are available
         self.rgb_widget = None
         self.rgb_widget_right = None
+        
         if self.rgbs is not None:
             # Check if stereo (tuple of two arrays)
             if isinstance(self.rgbs, tuple):
@@ -205,15 +207,17 @@ class OnlineRendererApp(Renderer):
         """Handle window layout changes."""
         r = self.window.content_rect
         panel_width = 250  # Width of the left-side panel
+        rgb_images_width = 500  # Width allocated for RGB images (mono or stereo)
         
         # If RGB widget exists, place it in top right corner
         if self.rgb_widget is not None:
+            
             # Check if stereo (both left and right widgets)
             is_stereo = self.rgb_widget_right is not None
             
             if is_stereo:
-                # Both left and right images - split 250px between them
-                rgb_width_each = panel_width // 2  # 125px each
+                # Both left and right images - split 500px between them
+                rgb_width_each = rgb_images_width // 2 
                 
                 # Calculate height based on actual video aspect ratio
                 if isinstance(self.rgbs, tuple):
@@ -248,7 +252,7 @@ class OnlineRendererApp(Renderer):
                 )
             else:
                 # Only one RGB image (mono) - full 250px width
-                rgb_width = panel_width  # Same width as control panel
+                rgb_width = rgb_images_width  # Same width as control panel
                 
                 # Calculate height based on actual video aspect ratio
                 video_height, video_width = self.rgbs.shape[1:3]
@@ -288,27 +292,70 @@ class OnlineRendererApp(Renderer):
     
     def _update_rgb_image(self, fid):
         """Update the RGB image widget for the current frame."""
-        if self.rgb_widget is not None and self.rgbs is not None:
-            # Check if stereo (tuple)
-            if isinstance(self.rgbs, tuple):
-                # Update left eye
-                rgb_left = self.rgbs[0][fid]
-                rgb_left = self._convert_rgb_to_uint8(rgb_left)
-                o3d_img_left = o3d.geometry.Image(rgb_left)
-                self.rgb_widget.update_image(o3d_img_left)
+        
+        if self.rgbs is None or self.rgb_widget is None:
+            return
+            
+        # Check if stereo (tuple)
+        if isinstance(self.rgbs, tuple):
+            
+            # Get poses for stereo
+            pose_c2w_left = None
+            pose_c2w_right = None
+            if self.poses_c2w is not None:
+                if isinstance(self.poses_c2w, tuple):
+                    pose_c2w_left = self.poses_c2w[0][fid]
+                    pose_c2w_right = self.poses_c2w[1][fid]
+                else:
+                    # Fallback: same pose for both eyes
+                    pose_c2w_left = self.poses_c2w[fid]
+                    pose_c2w_right = pose_c2w_left
+            assert pose_c2w_left is not None, "Left eye pose_c2w is None"
+            assert pose_c2w_right is not None, "Right eye pose_c2w is None"
+            
+            # Update left eye
+            rgb_left = self.rgbs[0][fid].copy()
+            rgb_left = self._convert_rgb_to_uint8(rgb_left)
+            
+            # Draw tracks on left eye if available
+            if self.tracks3d is not None and self.K is not None and pose_c2w_left is not None:
+                # Get camera intrinsics for this frame
+                K = self.K if len(self.K.shape) == 2 else self.K[fid]
+                rgb_left = self._draw_tracks_on_image(rgb_left, fid, K, pose_c2w_left)
+            
+            o3d_img_left = o3d.geometry.Image(rgb_left)
+            self.rgb_widget.update_image(o3d_img_left)
+            
+            # Update right eye
+            if self.rgb_widget_right is not None:
+                rgb_right = self.rgbs[1][fid].copy()
+                rgb_right = self._convert_rgb_to_uint8(rgb_right)
                 
-                # Update right eye
-                if self.rgb_widget_right is not None:
-                    rgb_right = self.rgbs[1][fid]
-                    rgb_right = self._convert_rgb_to_uint8(rgb_right)
-                    o3d_img_right = o3d.geometry.Image(rgb_right)
-                    self.rgb_widget_right.update_image(o3d_img_right)
-            else:
-                # Mono
-                rgb = self.rgbs[fid]
-                rgb = self._convert_rgb_to_uint8(rgb)
-                o3d_img = o3d.geometry.Image(rgb)
-                self.rgb_widget.update_image(o3d_img)
+                # Draw tracks on right eye if available
+                if self.tracks3d is not None and self.K is not None and pose_c2w_right is not None:
+                    # For right eye, we might need different K if available
+                    K = self.K if len(self.K.shape) == 2 else self.K[fid]
+                    rgb_right = self._draw_tracks_on_image(rgb_right, fid, K, pose_c2w_right)
+                
+                o3d_img_right = o3d.geometry.Image(rgb_right)
+                self.rgb_widget_right.update_image(o3d_img_right)
+        else:
+            
+            # Mono
+            rgb = self.rgbs[fid].copy()
+            rgb = self._convert_rgb_to_uint8(rgb)
+            
+            # Draw tracks if available
+            if self.tracks3d is not None and self.K is not None:
+                K = self.K if len(self.K.shape) == 2 else self.K[fid]
+                if self.poses_c2w is not None:
+                    pose_c2w = self.poses_c2w[fid]
+                else:
+                    pose_c2w = None
+                rgb = self._draw_tracks_on_image(rgb, fid, K, pose_c2w)
+            
+            o3d_img = o3d.geometry.Image(rgb)
+            self.rgb_widget.update_image(o3d_img)
     
     def _convert_rgb_to_uint8(self, rgb):
         """Convert RGB image to uint8 format for Open3D."""
@@ -318,14 +365,135 @@ class OnlineRendererApp(Renderer):
             else:
                 rgb = rgb.astype(np.uint8)
         return rgb
+    
+    def _project_3d_to_2d(self, points_3d, K, pose_c2w=None):
+        """
+        Project 3D points to 2D image coordinates.
+        
+        Args:
+            points_3d: (N, 3) array of 3D points in world coordinates
+            K: (3, 3) camera intrinsic matrix
+            pose_c2w: (4, 4) camera-to-world pose matrix, if None set to identity
+        
+        Returns:
+            (N, 2) array of 2D pixel coordinates
+        """
+        
+        if pose_c2w is None:
+            pose_c2w = np.eye(4)
+        
+        # Ensure pose_c2w is 4x4
+        if pose_c2w.shape != (4, 4):
+            # If it's (3, 4), convert to (4, 4)
+            if pose_c2w.shape == (3, 4):
+                pose_c2w = np.vstack([pose_c2w, [0, 0, 0, 1]])
+            else:
+                raise ValueError(f"Invalid pose shape: {pose_c2w.shape}, expected (4, 4) or (3, 4)")
+        
+        # Transform from world to camera coordinates
+        pose_w2c = np.linalg.inv(pose_c2w)
+        points_3d_hom = np.hstack([points_3d, np.ones((points_3d.shape[0], 1))])
+        points_camera = (pose_w2c @ points_3d_hom.T).T[:, :3]
+        
+        # Project to image plane
+        points_2d_hom = (K @ points_camera.T).T
+        points_2d = points_2d_hom[:, :2] / points_2d_hom[:, 2:3]
+        
+        return points_2d, points_camera[:, 2]  # Return 2D coords and depth
+    
+    def _draw_tracks_on_image(self, rgb, fid, K, pose_c2w=None):
+        """
+        Draw 2D tracks on RGB image.
+        
+        Args:
+            rgb: (H, W, 3) RGB image
+            fid: Current frame index
+            K: (3, 3) camera intrinsic matrix
+            pose_c2w: (4, 4) camera-to-world pose matrix, if None set to identity
+        
+        Returns:
+            RGB image with tracks drawn
+        """
+        if self.tracks3d is None or not self.render_tracks:
+            return rgb
+        
+        # Make a copy to draw on
+        rgb = rgb.copy()
+        h, w = rgb.shape[:2]
+        
+        # Get track trail range
+        start_frame = max(0, fid - self.tracks_tail_length)
+        
+        # Limit to max 300 tracks for 2D visualization efficiency
+        n_tracks = self.tracks3d.shape[0]
+        max_tracks_2d = 300
+        
+        if n_tracks > max_tracks_2d:
+            # Sample evenly distributed tracks
+            track_indices = np.linspace(0, n_tracks - 1, max_tracks_2d, dtype=int)
+        else:
+            track_indices = np.arange(n_tracks)
+        
+        for track_idx in track_indices:
+            # Collect visible points in the trail
+            trail_points_3d = []
+            trail_frames = []
+            
+            for frame_idx in range(start_frame, fid + 1):
+                point_3d = self.tracks3d[track_idx, frame_idx]
+                # Check if valid (not NaN or Inf)
+                if not (np.isnan(point_3d).any() or np.isinf(point_3d).any()):
+                    trail_points_3d.append(point_3d)
+                    trail_frames.append(frame_idx)
+            
+            if len(trail_points_3d) < 2:
+                continue
+            
+            # Project to 2D
+            trail_points_3d = np.array(trail_points_3d)
+            points_2d, depths = self._project_3d_to_2d(trail_points_3d, K, pose_c2w)
+            
+            # Get track color (matches 3D track color)
+            track_color = self.tracks_colors[track_idx]
+            # Convert from [0,1] to [0,255] RGB (not BGR, since our images are RGB)
+            color_rgb = (int(track_color[0] * 255), int(track_color[1] * 255), int(track_color[2] * 255))
+            
+            # Draw line segments
+            for i in range(len(points_2d) - 1):
+                pt1 = points_2d[i]
+                pt2 = points_2d[i + 1]
+                depth1 = depths[i]
+                depth2 = depths[i + 1]
+                
+                # Only draw if both points are in front of camera
+                if depth1 > 0 and depth2 > 0:
+                    # Check if points are within image bounds (with some margin)
+                    if (-50 < pt1[0] < w + 50 and -50 < pt1[1] < h + 50 and
+                        -50 < pt2[0] < w + 50 and -50 < pt2[1] < h + 50):
+                        
+                        pt1_int = (int(pt1[0]), int(pt1[1]))
+                        pt2_int = (int(pt2[0]), int(pt2[1]))
+                        
+                        cv2.line(rgb, pt1_int, pt2_int, color_rgb, 2, cv2.LINE_AA)
+            
+            # Draw current point as a circle
+            if len(points_2d) > 0 and depths[-1] > 0:
+                current_pt = points_2d[-1]
+                if 0 < current_pt[0] < w and 0 < current_pt[1] < h:
+                    cv2.circle(rgb, (int(current_pt[0]), int(current_pt[1])), 3, color_rgb, -1)
+            
+        return rgb
             
     def _on_show_tracks_toggled(self, is_checked):
         """Handle toggling of 3D tracks visibility."""
         self.render_tracks = is_checked
         # Remove previously added tracks if any
         self.o3d_renderer.scene.remove_geometry(self.TRACK_LINES_NAME)
+        self.o3d_renderer.scene.remove_geometry(f"{self.TRACK_LINES_NAME}_points")
         # Update geometry to reflect change
         self._update_geometry(self.state['fid'])
+        # Update RGB images to show/hide 2D tracks
+        self._update_rgb_image(self.state['fid'])
     
     def _on_show_segmentation_toggled(self, is_checked):
         """Handle toggling of segmentation rendering."""

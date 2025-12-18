@@ -6,7 +6,8 @@ import matplotlib.cm
 
 def compute_tracks_colors(tracks3d):
     """
-    Compute RGB colors for tracks based on their first valid 3D coordinate.
+    Compute RGB colors for tracks using perceptually uniform colormap.
+    Colors are based on spatial distribution of first valid 3D coordinate.
     
     Args:
         tracks3d: (N, T, 3) array of 3D track positions
@@ -14,28 +15,41 @@ def compute_tracks_colors(tracks3d):
     Returns:
         (N, 3) array of RGB colors in [0, 1] range
     """
-    # Convert first coordinate of each track to color
-    tracks_colors = np.zeros_like(tracks3d[:, 0, :])
-    empty_color = np.ones_like(tracks_colors[:, 0], dtype=bool)
+    n_tracks = tracks3d.shape[0]
+    
+    # Get first valid coordinate for each track
+    first_coords = np.zeros((n_tracks, 3))
+    has_valid = np.zeros(n_tracks, dtype=bool)
     
     for fid in range(tracks3d.shape[1]):
         points_at_fid = tracks3d[:, fid, :]
         valid_points_mask = ~np.isnan(points_at_fid).any(axis=1) & ~np.isinf(points_at_fid).any(axis=1)
-        new_values_mask = valid_points_mask & empty_color
-        tracks_colors[new_values_mask] = points_at_fid[new_values_mask]
-        empty_color |= ~valid_points_mask
-        # Check if all colors have been assigned
-        if not np.any(empty_color):
+        new_values_mask = valid_points_mask & ~has_valid
+        first_coords[new_values_mask] = points_at_fid[new_values_mask]
+        has_valid |= valid_points_mask
+        
+        # Early exit if all tracks have valid coordinates
+        if np.all(has_valid):
             break
     
-    # Normalize to [0, 1] range
-    min_x, max_x = np.min(tracks_colors[:, 0]), np.max(tracks_colors[:, 0])
-    min_y, max_y = np.min(tracks_colors[:, 1]), np.max(tracks_colors[:, 1])
-    min_z, max_z = np.min(tracks_colors[:, 2]), np.max(tracks_colors[:, 2])
+    # Use perceptually uniform colormap (viridis) based on spatial hashing
+    # Combine XYZ into a single value for colormap lookup
+    spatial_hash = np.linalg.norm(first_coords, axis=1)
     
-    tracks_colors[:, 0] = (tracks_colors[:, 0] - min_x) / (max_x - min_x + 1e-8)
-    tracks_colors[:, 1] = (tracks_colors[:, 1] - min_y) / (max_y - min_y + 1e-8)
-    tracks_colors[:, 2] = (tracks_colors[:, 2] - min_z) / (max_z - min_z + 1e-8)
+    # Normalize to [0, 1]
+    min_val, max_val = np.min(spatial_hash), np.max(spatial_hash)
+    normalized_hash = (spatial_hash - min_val) / (max_val - min_val + 1e-8)
+    
+    # Apply colormap for better visual distinction
+    cmap = matplotlib.cm.get_cmap('turbo')
+    tracks_colors = cmap(normalized_hash)[:, :3]  # Take RGB, discard alpha
+    
+    # Boost saturation for better visibility
+    # Convert to HSV, increase saturation, convert back
+    from matplotlib.colors import rgb_to_hsv, hsv_to_rgb
+    tracks_colors_hsv = rgb_to_hsv(tracks_colors.reshape(-1, 1, 3))
+    tracks_colors_hsv[:, :, 1] = np.clip(tracks_colors_hsv[:, :, 1] * 1.3, 0, 1)  # Increase saturation
+    tracks_colors = hsv_to_rgb(tracks_colors_hsv).reshape(-1, 3)
     
     return tracks_colors
 

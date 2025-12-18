@@ -216,6 +216,7 @@ def create_camera_trajectory(poses_c2w, color=[0.0, 0.0, 1.0]):
 def create_track_lines(tracks3d, tracks_colors, current_frame, trail_length=10):
     """
     Create line visualization for 3D tracks showing trails from previous frames.
+    Enhanced with gradient opacity (simulated via color darkening).
     
     Args:
         tracks3d: (N, T, 3) array of 3D track positions
@@ -241,24 +242,40 @@ def create_track_lines(tracks3d, tracks_colors, current_frame, trail_length=10):
     
     # Determine frame range for trails (include current_frame)
     start_frame = max(0, current_frame - trail_length)
+    num_trail_frames = current_frame - start_frame + 1
     
     for track_idx in range(n_tracks):
         track_points = []
+        track_frame_indices = []
+        
         # Include current_frame in the range
         for frame_idx in range(start_frame, current_frame + 1):
             if visible_list[track_idx, frame_idx]:
                 track_points.append(tracks3d[track_idx, frame_idx])
+                track_frame_indices.append(frame_idx)
         
         # Only create lines if we have at least 2 visible points
         if len(track_points) >= 2:
             start_idx = len(points)
             points.extend(track_points)
             
-            # Create line segments connecting consecutive points
+            base_color = tracks_colors[track_idx]
+            
+            # Create line segments connecting consecutive points with gradient
             for i in range(len(track_points) - 1):
                 lines.append([start_idx + i, start_idx + i + 1])
-                color = tracks_colors[track_idx]
-                colors.append(color)
+                
+                # Calculate opacity/brightness based on temporal distance
+                # Older segments are darker (fade effect)
+                frame_position = track_frame_indices[i]
+                age_ratio = (frame_position - start_frame) / max(1, num_trail_frames - 1)
+                
+                # Fade from 0.3 (oldest) to 1.0 (newest)
+                brightness = 0.3 + 0.7 * age_ratio
+                
+                # Apply brightness to color
+                faded_color = base_color * brightness
+                colors.append(faded_color)
     
     if len(points) == 0 or len(lines) == 0:
         return None

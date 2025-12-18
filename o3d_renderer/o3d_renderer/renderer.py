@@ -62,6 +62,25 @@ class Renderer:
         self.generate_point_cloud_fn = generate_point_cloud_fn
         self.tracks_tail_length = 10
         
+        # Check if data type is correct 
+        # RGBs shoud be uint8 in [0, 255]
+        if self.rgbs is not None:
+            if isinstance(self.rgbs, tuple):
+                assert len(self.rgbs) == 2, "If rgbs is a tuple, it must contain two elements for stereo."
+                rgbs_left = self.rgbs[0]
+                rgbs_right = self.rgbs[1]
+                assert isinstance(rgbs_left, np.ndarray), "RGB images must be a numpy array."
+                assert isinstance(rgbs_right, np.ndarray), "RGB images must be a numpy array."
+                assert rgbs_left.dtype == np.uint8 and rgbs_right.dtype == np.uint8, "RGB images must be of type uint8."
+            else:
+                assert isinstance(self.rgbs, np.ndarray), "RGB images must be a numpy array."
+                assert self.rgbs.dtype == np.uint8, "RGB images must be of type uint8."
+        
+        # instances_masks should be uint8
+        if self.instances_masks is not None:
+            assert isinstance(self.instances_masks, np.ndarray), "Instance masks must be a numpy array."
+            assert self.instances_masks.dtype == np.uint8, "Instance masks must be of type uint8."
+        
         # Precompute time color coding (one rgb per frame, turbo colormap)
         cmap = matplotlib.cm.get_cmap('turbo', self.nr_frames)
         time_values = np.linspace(0, 1, self.nr_frames)
@@ -331,20 +350,43 @@ class Renderer:
         self.o3d_renderer.scene.add_geometry(self.CAMERA_TRAJECTORY_NAME, trajectory, self.line_material)
         
     def _update_tracks_3d(self, fid):
-        """Update 3D track lines."""
+        """Update 3D track lines with enhanced visualization."""
         assert self.o3d_renderer is not None, "Renderer not initialized."
         
         if self.tracks3d is None:
             return
         
         self.o3d_renderer.scene.remove_geometry(self.TRACK_LINES_NAME)
+        self.o3d_renderer.scene.remove_geometry(f"{self.TRACK_LINES_NAME}_points")
         
+        # Create track lines with gradient
         track_lines = create_track_lines(self.tracks3d, self.tracks_colors, fid, trail_length=self.tracks_tail_length)
         if track_lines is not None:
             track_lines_material = MaterialRecord()
             track_lines_material.shader = "unlitLine"
-            track_lines_material.line_width = 2.0
+            track_lines_material.line_width = 3.0  # Increased from 2.0 for better visibility
             self.o3d_renderer.scene.add_geometry(self.TRACK_LINES_NAME, track_lines, track_lines_material)
+        
+        # Add spheres at current track positions for better visibility
+        current_points = []
+        current_colors = []
+        
+        visible_list = ~np.isnan(self.tracks3d[:, fid]).any(axis=1) & ~np.isinf(self.tracks3d[:, fid]).any(axis=1)
+        
+        for track_idx in range(self.tracks3d.shape[0]):
+            if visible_list[track_idx]:
+                current_points.append(self.tracks3d[track_idx, fid])
+                current_colors.append(self.tracks_colors[track_idx])
+        
+        if len(current_points) > 0:
+            # Create point cloud for current positions
+            current_pcd = toOpen3dCloud(np.array(current_points), np.array(current_colors))
+            
+            # Use larger points to make them visible
+            current_points_material = MaterialRecord()
+            current_points_material.shader = "defaultUnlit"
+            current_points_material.point_size = 5.0  # Larger points for visibility
+            self.o3d_renderer.scene.add_geometry(f"{self.TRACK_LINES_NAME}_points", current_pcd, current_points_material)
     
     def _update_camera_frustum(self, fid):
         """Update camera frustum for current frame."""

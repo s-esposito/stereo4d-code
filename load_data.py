@@ -118,7 +118,6 @@ def load_data(root_dir: str, split:str, scene:str, timestamp:str):
     
     # Load meta
     dp = utils.load_dataset_npz(meta_path)
-    # print("dp.keys():", dp.keys())
     
     # Load extrinsics (TODO Stefano: double check if this is indeed the right eye)
     extrs_left = dp['extrs_rectified']
